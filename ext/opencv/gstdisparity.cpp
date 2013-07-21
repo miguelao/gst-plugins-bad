@@ -1,0 +1,523 @@
+/* 
+ * GStreamer
+ * Copyright (C) 2013 Miguel Casas-Sanchez <miguelecasassanchez@gmail.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ * Alternatively, the contents of this file may be used under the
+ * GNU Lesser General Public License Version 2.1 (the "LGPL"), in
+ * which case the following provisions apply instead of the ones
+ * mentioned above:
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Library General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Library General Public License for more details.
+ *
+ * You should have received a copy of the GNU Library General Public
+ * License along with this library; if not, write to the
+ * Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
+ * Boston, MA 02110-1301, USA.
+ */
+/*
+ * SECTION:element-disparity
+ *
+ * TODO(mcasas): write comment here, ref articles.
+ *
+ *
+ * <refsect2>
+ * <title>Example launch line</title>
+ * |[
+ * gst-launch-1.0       videotestsrc ! video/x-raw,width=320,height=240 ! disp0.sink_right      videotestsrc ! video/x-raw,width=320,height=240 ! disp0.sink_left      disparity name=disp0 ! videoconvert ! ximagesink
+ * ]|
+ * Another example, with two png files representing a classical stereo matching,
+ * downloadable from http://vision.middlebury.edu/stereo/submit/tsukuba/im4.png and 
+ * im3.png. Note here they are downloaded in ~ (home).
+ * |[
+gst-launch-1.0    multifilesrc  location=~/im3.png ! pngdec ! videoconvert  ! disp0.sink_right     multifilesrc  location=~/im4.png ! pngdec ! videoconvert ! disp0.sink_left disparity   name=disp0 method=sbm     disp0.src ! videoconvert ! ximagesink
+ * ]|
+ *
+ * </refsect2>
+ */
+
+#ifdef HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
+#include <gst/gst.h>
+#include <gst/video/video.h>
+#include "gstdisparity.h"
+
+GST_DEBUG_CATEGORY_STATIC (gst_disparity_debug);
+#define GST_CAT_DEFAULT gst_disparity_debug
+
+/* Filter signals and args */
+enum
+{
+  /* FILL ME */
+  LAST_SIGNAL
+};
+
+enum
+{
+  PROP_0,
+  PROP_METHOD,
+};
+
+typedef enum
+{
+  METHOD_SBM,
+  METHOD_SGBM
+} GstDisparityMethod;
+
+#define DEFAULT_METHOD METHOD_SGBM
+
+#define GST_TYPE_DISPARITY_METHOD (gst_disparity_method_get_type ())
+static GType
+gst_disparity_method_get_type (void)
+{
+  static GType etype = 0;
+  if (etype == 0) {
+    static const GEnumValue values[] = {
+      {METHOD_SBM, "Global block matching algorithm", "sbm"},
+      {METHOD_SGBM, "Semi-global block matching algorithm", "sgbm"},
+      {0, NULL, NULL},
+    };
+    etype = g_enum_register_static ("GstDisparityMethod", values);
+  }
+  return etype;
+}
+
+/* the capabilities of the inputs and outputs.
+ */
+static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE ("sink",
+    GST_PAD_SINK,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE ("RGB"))
+    );
+
+static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE ("src",
+    GST_PAD_SRC,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE ("RGB"))
+    );
+
+G_DEFINE_TYPE (GstDisparity, gst_disparity, GST_TYPE_ELEMENT);
+
+static void gst_disparity_finalize (GObject * object);
+static void gst_disparity_set_property (GObject * object, guint prop_id,
+    const GValue * value, GParamSpec * pspec);
+static void gst_disparity_get_property (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec);
+
+static gboolean gst_disparity_handle_sink_event (GstPad * pad,
+    GstObject * parent, GstEvent * event);
+static GstFlowReturn gst_disparity_chain_right (GstPad * pad, GstObject *parent, GstBuffer * buffer);
+static GstFlowReturn gst_disparity_chain_left (GstPad * pad, GstObject *parent, GstBuffer * buffer);
+static void gst_disparity_release_all_pointers (GstDisparity * filter);
+
+static int initialise_sbm (GstDisparity * filter);
+static int run_sbm_iteration (GstDisparity * filter);
+static int run_sgbm_iteration (GstDisparity * filter);
+static int finalise_sbm (GstDisparity * filter);
+
+/* initialize the disparity's class */
+static void
+gst_disparity_class_init (GstDisparityClass * klass)
+{
+  GObjectClass *gobject_class;
+  GstElementClass *element_class = GST_ELEMENT_CLASS (klass);
+
+  gobject_class = (GObjectClass *) klass;
+
+  gobject_class->finalize = gst_disparity_finalize;
+  gobject_class->set_property = gst_disparity_set_property;
+  gobject_class->get_property = gst_disparity_get_property;
+
+
+  g_object_class_install_property (gobject_class, PROP_METHOD,
+      g_param_spec_enum ("method",
+          "Stereo matching method to use",
+          "Stereo matching method to use",
+          GST_TYPE_DISPARITY_METHOD, DEFAULT_METHOD,
+	  (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+
+  gst_element_class_set_static_metadata (element_class,
+       "Stereo image disparity (depth) map calculation",
+       "Filter/Effect/Video",
+       "Calculates the stereo disparity map from two images.",
+       "Miguel Casas-Sanchez <miguelecasassanchez@gmail.com>");
+
+  gst_element_class_add_pad_template (element_class,
+      gst_static_pad_template_get (&src_factory));
+  gst_element_class_add_pad_template (element_class,
+      gst_static_pad_template_get (&sink_factory));
+}
+
+/* initialize the new element
+ * instantiate pads and add them to element
+ * set pad callback functions
+ * initialize instance structure
+ */
+static void
+gst_disparity_init (GstDisparity * filter)
+{
+  filter->sinkpad_left = 
+    gst_pad_new_from_static_template (&sink_factory, "sink_left");
+  gst_pad_set_event_function (filter->sinkpad_left,
+      GST_DEBUG_FUNCPTR (gst_disparity_handle_sink_event));
+  gst_pad_set_chain_function (filter->sinkpad_left,
+      GST_DEBUG_FUNCPTR (gst_disparity_chain_left));
+  GST_PAD_SET_PROXY_CAPS (filter->sinkpad_left);
+  gst_element_add_pad (GST_ELEMENT (filter), filter->sinkpad_left);
+
+  filter->sinkpad_right = 
+    gst_pad_new_from_static_template (&sink_factory, "sink_right");
+  gst_pad_set_event_function (filter->sinkpad_right,
+      GST_DEBUG_FUNCPTR (gst_disparity_handle_sink_event));
+  gst_pad_set_chain_function (filter->sinkpad_right,
+      GST_DEBUG_FUNCPTR (gst_disparity_chain_right));
+  GST_PAD_SET_PROXY_CAPS (filter->sinkpad_right);
+  gst_element_add_pad (GST_ELEMENT (filter), filter->sinkpad_right);
+
+  filter->srcpad = gst_pad_new_from_static_template (&src_factory, "src");
+  GST_PAD_SET_PROXY_CAPS (filter->srcpad);
+  gst_element_add_pad (GST_ELEMENT (filter), filter->srcpad);
+
+  filter->lock = g_mutex_new ();
+  filter->cond = g_cond_new ();
+
+  filter->method = DEFAULT_METHOD;
+}
+
+static void
+gst_disparity_set_property (GObject * object, guint prop_id,
+    const GValue * value, GParamSpec * pspec)
+{
+  GstDisparity *filter = GST_DISPARITY (object);
+  switch (prop_id) {
+    case PROP_METHOD:
+      filter->method = g_value_get_enum (value);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
+}
+
+static void
+gst_disparity_get_property (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec)
+{
+  GstDisparity *filter = GST_DISPARITY (object);
+
+  switch (prop_id) {
+    case PROP_METHOD:
+      g_value_set_enum (value, filter->method);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
+}
+
+/* GstElement vmethod implementations */
+
+/* this function handles the link with other elements */
+static gboolean
+gst_disparity_handle_sink_event (GstPad * pad, GstObject * parent,
+    GstEvent * event)
+{
+  GstDisparity *fs;
+  GstVideoInfo info;
+  gboolean res = TRUE;
+
+  //filter = GST_DISPARITY (parent);
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_CAPS:
+    {
+      GstCaps *caps;
+      gst_event_parse_caps (event, &caps);
+      gst_video_info_from_caps (&info, caps);
+
+      GST_WARNING( " Negotiating caps via event (%s) %s",
+		  gst_pad_get_name(pad), gst_caps_to_string(caps));
+      fs = GST_DISPARITY (parent);
+
+      fs->width = info.width;
+      fs->height = info.height;
+      fs->actualChannels = info.finfo->n_components;
+
+      fs->imgSize = cvSize(fs->width, fs->height);
+      if (fs->cvRGB_right)
+	     gst_disparity_release_all_pointers (fs);
+
+      fs->cvRGB_right = cvCreateImageHeader(fs->imgSize, IPL_DEPTH_8U, 
+					    fs->actualChannels);
+      fs->cvRGB_left  = cvCreateImageHeader(fs->imgSize, IPL_DEPTH_8U, 
+					    fs->actualChannels);
+      fs->cvGray_right = cvCreateImage(fs->imgSize, IPL_DEPTH_8U, 1);
+      fs->cvGray_left = cvCreateImage(fs->imgSize, IPL_DEPTH_8U, 1);
+      fs->cvGray_depth_map1  = cvCreateImage(fs->imgSize, IPL_DEPTH_16S, 1);
+
+      fs->cvGray_depth_map2  = cvCreateImage(fs->imgSize, IPL_DEPTH_8U, 1);
+
+      GST_DEBUG( " Negotiated caps via event (%s) %s",
+		  gst_pad_get_name(pad), gst_caps_to_string(caps));
+
+      /* Stereo Block Matching methods */
+      initialise_sbm (fs);
+      
+      break;
+    }
+    default:
+      break;
+  }
+
+  res = gst_pad_event_default (pad, parent, event);
+
+  return res;
+
+
+}
+
+static void
+gst_disparity_release_all_pointers (GstDisparity * filter)
+{
+  cvReleaseImage (&filter->cvRGB_right);
+  cvReleaseImage (&filter->cvRGB_left);
+  cvReleaseImage (&filter->cvGray_depth_map1);
+  cvReleaseImage (&filter->cvGray_right);
+  cvReleaseImage (&filter->cvGray_left);
+  cvReleaseImage (&filter->cvGray_depth_map2);
+
+  finalise_sbm (filter);
+}
+static void
+gst_disparity_finalize (GObject * object)
+{
+  GstDisparity *filter;
+  filter = GST_DISPARITY (object);
+  gst_disparity_release_all_pointers (filter);
+
+  g_cond_free (filter->cond);
+  g_mutex_free (filter->lock);
+  G_OBJECT_CLASS (gst_disparity_parent_class)->finalize (object);
+}
+
+
+
+static GstFlowReturn
+gst_disparity_chain_left (GstPad * pad, GstObject *parent, GstBuffer * buffer)
+{
+  GstDisparity *fs;
+  GstMapInfo info;
+
+  fs = GST_DISPARITY (parent);
+  GST_DEBUG ("processing frame from left");
+  g_mutex_lock (fs->lock);
+  if (fs->buffer_left) {
+    GST_INFO (" right is busy, wait and hold");
+    g_cond_wait (fs->cond, fs->lock);
+    GST_INFO (" right is free, continuing");
+  }
+  fs->buffer_left = buffer;
+
+  if (!gst_buffer_map (buffer, &info, (GstMapFlags)GST_MAP_READWRITE)) {
+    return GST_FLOW_ERROR;
+  }
+  if (fs->cvRGB_left)
+    fs->cvRGB_left->imageData = (char*) info.data;  
+
+  GST_DEBUG ("signalled right");
+  gst_buffer_unref (buffer); // inside the lock!
+  g_cond_signal (fs->cond);
+  g_mutex_unlock (fs->lock);
+
+  return GST_FLOW_OK;
+}
+
+static GstFlowReturn
+gst_disparity_chain_right (GstPad * pad, GstObject *parent, GstBuffer * buffer)
+{
+  GstDisparity *fs;
+  GstMapInfo info;
+  GstFlowReturn ret;
+
+  fs = GST_DISPARITY (parent);
+  GST_DEBUG ("processing frame from right");
+  g_mutex_lock (fs->lock);
+  if (fs->buffer_left == NULL) {
+    GST_INFO (" left has not provided another frame yet, waiting");
+    g_cond_wait (fs->cond, fs->lock);
+    GST_INFO (" left has just provided a frame, continuing");
+  }
+  if (!gst_buffer_map (buffer, &info, (GstMapFlags)GST_MAP_READWRITE)){
+    g_mutex_unlock (fs->lock);
+    return GST_FLOW_ERROR;
+  }
+  if (fs->cvRGB_right)
+    fs->cvRGB_right->imageData = (char*) info.data;  
+  
+ 
+  /* Here do the business */
+  GST_DEBUG ("comparing frames, %d width=%dp height=%dp channels=%d",
+  	       (int)info.size, fs->width, fs->height, fs->actualChannels);
+
+  /* Stereo corresponding using semi-global block matching. According to OpenCV:
+     "" The class implements modified H. Hirschmuller algorithm HH08 . The main 
+     differences between the implemented algorithm and the original one are:
+
+     - by default the algorithm is single-pass, i.e. instead of 8 directions we 
+     only consider 5. Set fullDP=true to run the full variant of the algorithm
+     (which could consume a lot of memory)
+     - the algorithm matches blocks, not individual pixels (though, by setting
+     SADWindowSize=1 the blocks are reduced to single pixels)
+     - mutual information cost function is not implemented. Instead, we use a
+     simpler Birchfield-Tomasi sub-pixel metric from BT96 , though the color 
+     images are supported as well.
+     - we include some pre- and post- processing steps from K. Konolige 
+     algorithm FindStereoCorrespondenceBM , such as pre-filtering 
+     ( CV_STEREO_BM_XSOBEL type) and post-filtering (uniqueness check, quadratic
+     interpolation and speckle filtering) ""
+ */
+  if (METHOD_SGBM == fs->method) {
+    cvCvtColor (fs->cvRGB_left, fs->cvGray_left, CV_RGB2GRAY);
+    cvCvtColor (fs->cvRGB_right, fs->cvGray_right, CV_RGB2GRAY);
+    run_sgbm_iteration (fs);
+    cvNormalize(fs->cvGray_depth_map1, fs->cvGray_depth_map2, 0, 255, CV_MINMAX, NULL);
+    //cvConvertScale (fs->cvGray_depth_map1, fs->cvGray_depth_map2, 1.0, 0.0);
+    cvCvtColor (fs->cvGray_depth_map2, fs->cvRGB_right, CV_GRAY2RGB);
+  }
+  /*  */
+  else if (METHOD_SBM == fs->method){
+    cvCvtColor (fs->cvRGB_left, fs->cvGray_left, CV_RGB2GRAY);
+    cvCvtColor (fs->cvRGB_right, fs->cvGray_right, CV_RGB2GRAY);
+    run_sbm_iteration (fs);
+    cvNormalize(fs->cvGray_depth_map1, fs->cvGray_depth_map2, 0, 255, CV_MINMAX, NULL);
+    //cvConvertScale (fs->cvGray_depth_map1, fs->cvGray_depth_map2, 1.0, 0.0);
+    cvCvtColor (fs->cvGray_depth_map2, fs->cvRGB_right, CV_GRAY2RGB);
+  }
+
+  GST_DEBUG (" right has finished");
+  fs->buffer_left = NULL;
+  g_cond_signal (fs->cond);
+  g_mutex_unlock (fs->lock);
+  
+  ret = gst_pad_push (fs->srcpad, buffer);
+  //gst_object_unref (fs);
+  return ret;
+}
+
+
+
+
+
+/* entry point to initialize the plug-in
+ * initialize the plug-in itself
+ * register the element factories and other features
+ */
+gboolean
+gst_disparity_plugin_init (GstPlugin * disparity)
+{
+  GST_DEBUG_CATEGORY_INIT (gst_disparity_debug, "disparity", 0, 
+			   "Stereo image disparity (depth) map calculation");
+  return gst_element_register(disparity, "disparity", GST_RANK_NONE, 
+			      GST_TYPE_DISPARITY);
+}
+
+
+
+int
+initialise_sbm (GstDisparity * filter)
+{
+  filter->img_right_as_cvMat_rgb = (void*) new cv::Mat (filter->cvRGB_right, false);
+  filter->img_left_as_cvMat_rgb = (void*) new cv::Mat (filter->cvRGB_left, false);
+  filter->img_right_as_cvMat_gray = (void*) new cv::Mat (filter->cvGray_right, false);
+  filter->img_left_as_cvMat_gray = (void*) new cv::Mat (filter->cvGray_left, false);
+  filter->depth_map_as_cvMat = (void*) new cv::Mat (filter->cvGray_depth_map1, false);
+
+  filter->sbm = (void *) new cv::StereoBM ();
+  filter->sgbm = (void *) new cv::StereoSGBM (1,16*2,3,200,255,1,0,0,0,0,true);
+
+  ((cv::StereoBM *) filter->sbm)->state->SADWindowSize = 9;
+  ((cv::StereoBM *) filter->sbm)->state->numberOfDisparities = 112;
+  ((cv::StereoBM *) filter->sbm)->state->preFilterSize = 5;
+  ((cv::StereoBM *) filter->sbm)->state->preFilterCap = 61;
+  ((cv::StereoBM *) filter->sbm)->state->minDisparity = -39;
+  ((cv::StereoBM *) filter->sbm)->state->textureThreshold = 507;
+  ((cv::StereoBM *) filter->sbm)->state->uniquenessRatio = 0;
+  ((cv::StereoBM *) filter->sbm)->state->speckleWindowSize = 0;
+  ((cv::StereoBM *) filter->sbm)->state->speckleRange = 8;
+  ((cv::StereoBM *) filter->sbm)->state->disp12MaxDiff = 1;
+
+  // ((cv::StereoSGBM *) filter->sgbm)->SADWindowSize = 5;//3;
+  // ((cv::StereoSGBM *) filter->sgbm)->numberOfDisparities = 192;//144;
+  // ((cv::StereoSGBM *) filter->sgbm)->preFilterCap = 4;// 63;
+  // ((cv::StereoSGBM *) filter->sgbm)->minDisparity = -64;//-39;
+  // ((cv::StereoSGBM *) filter->sgbm)->uniquenessRatio = 1;//10;
+  // ((cv::StereoSGBM *) filter->sgbm)->speckleWindowSize = 150;//100;
+  // ((cv::StereoSGBM *) filter->sgbm)->speckleRange = 2;//32;
+  // ((cv::StereoSGBM *) filter->sgbm)->disp12MaxDiff = 10;//1;
+  // ((cv::StereoSGBM *) filter->sgbm)->fullDP = false;
+  // ((cv::StereoSGBM *) filter->sgbm)->P1 = 600;//216;
+  // ((cv::StereoSGBM *) filter->sgbm)->P2 = 2400;//864;
+
+  return (0);
+}
+
+int
+run_sbm_iteration (GstDisparity * filter)
+{
+    GST_WARNING( "entering steromatching");
+  (*((cv::StereoBM *) filter->sbm)) (*((cv::Mat *)filter->img_left_as_cvMat_gray), 
+				     *((cv::Mat *)filter->img_right_as_cvMat_gray),
+				     *((cv::Mat *)filter->depth_map_as_cvMat));
+  GST_WARNING( "leaving steromatching");
+  return (0);
+}
+
+int
+run_sgbm_iteration (GstDisparity * filter)
+{
+    GST_WARNING( "entering steroGmatching");
+  (*((cv::StereoSGBM *) filter->sgbm))(*((cv::Mat *)filter->img_left_as_cvMat_gray), 
+				       *((cv::Mat *)filter->img_right_as_cvMat_gray),
+				       *((cv::Mat *)filter->depth_map_as_cvMat));
+    GST_WARNING( "leaving steroGmatching");
+  return (0);
+}
+
+int
+finalise_sbm (GstDisparity * filter)
+{
+  delete (cv::Mat *) filter->img_left_as_cvMat_rgb;
+  delete (cv::Mat *) filter->img_right_as_cvMat_rgb;
+  delete (cv::Mat *) filter->depth_map_as_cvMat;
+  delete (cv::Mat *) filter->img_left_as_cvMat_gray;
+  delete (cv::Mat *) filter->img_right_as_cvMat_gray;
+  delete (cv::StereoBM *) filter->sbm;
+  delete (cv::StereoSGBM *) filter->sgbm;
+  return (0);
+}
