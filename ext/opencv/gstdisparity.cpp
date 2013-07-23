@@ -43,7 +43,23 @@
 /*
  * SECTION:element-disparity
  *
- * TODO(mcasas): write comment here, ref articles.
+ * Assumptions: Input images are stereo, rectified and aligned. If these conditions are not met,
+ * results can be poor. Both cameras should be looking parallel to maximize the overlapping
+ * stereo area, and should not have objects too close or too far. The algorithms implemented here
+ * run prefiltering stages to normalize brightness between the inputs, and to maximize texture.
+ *
+ * Note that in general is hard to find correspondences between soft textures, for instance a
+ * block of gloss blue colour. The output is a gray image with values close to white meaning 
+ * closer to the cameras and darker far away. Black means that the pixels were not matched
+ * correctly (not found). The resulting depth map can be transformed into real world coordinates
+ * by means of OpenCV function (reprojectImageTo3D) but for this the camera matrixes need to
+ * be fully known.
+ *
+ * Algorithm 1 is the OpenCV Stereo Block Matching, similar to the one developed by Kurt Konolige
+ * [A] and that works by using small Sum-of-absolute-differenc (SAD) windows to find matching 
+ * points between the left and right rectified images. This algorithm finds only strongly matching
+ * points between both images, this means normally strong textures. In soft textures, such as a
+ * single coloured wall (as opposed to, f.i. a hairy rug), not all pixels might have correspondence.
  *
  * Algorithm 2 is the Semi Global Matching (SGM) algorithm [B] which models the scene structure
  * with a point-wise matching cost and an associated smoothness term. The energy minimization 
@@ -52,17 +68,28 @@
  * independent paths. The SGM approach works well near depth discontinuities, but produces less 
  * accurate results. Despite its relatively large memory footprint, this method is very fast and 
  * potentially robust to complicated textured regions.
-
+ *
+ * Algorithm 3 is the OpenCV implementation of a modification of the variational stereo 
+ * correspondence algorithm, described in [C].
+ *
  * Algorithm 4 is the Graph Cut stereo vision algorithm (GC) introduced in [D]; it is a global 
  * stereo vision method. It calculates depth discontinuities by minimizing an energy function
  * combingin a point-wise matching cost and a smoothness term. The energy function is passed 
  * to graph and Graph Cut is used to find a lowest-energy cut. GC is computationally intensive due
  * to its global nature and uses loads of memory, but it can deal with textureless regions and
  * reflections better than other methods.
-
+ * Graphcut based technique is CPU intensive hence smaller framesizes are desired.
+ *
+ * Some test images can be found here: http://vision.stanford.edu/~birch/p2p/
+ *
+ * [A] K. Konolige. Small vision system. hardware and implementation. In Proc. International 
+ * Symposium on Robotics Research, pages 111--116, Hayama, Japan, 1997.
  * [B] H. Hirschmüller, “Accurate and efficient stereo processing by semi-global matching and 
  * mutual information,” in Proceedings of the IEEE Conference on Computer Vision and Pattern 
  * Recognition, 2005, pp. 807–814.
+ * [C] S. Kosov, T. Thormaehlen, H.-P. Seidel "Accurate Real-Time Disparity Estimation with
+ * Variational Methods" Proceedings of the 5th International Symposium on Visual Computing, 
+ * Vegas, USA
  * [D] Scharstein, D. & Szeliski, R. (2001). A taxonomy and evaluation of dense two-frame stereo 
  * correspondence algorithms, International Journal of Computer Vision 47: 7–42.
  *
@@ -77,11 +104,10 @@
  * |[
 gst-launch-1.0    multifilesrc  location=~/im3.png ! pngdec ! videoconvert  ! disp0.sink_right     multifilesrc  location=~/im4.png ! pngdec ! videoconvert ! disp0.sink_left disparity   name=disp0 method=sbm     disp0.src ! videoconvert ! ximagesink
  * ]|
- * Yet another example with two cameras, which should be the same model.
+ * Yet another example with two cameras, which should be the same model, aligned etc.
  * |[
  gst-launch-1.0    v4l2src device=/dev/video1 ! video/x-raw,width=320,height=240 ! videoconvert  ! disp0.sink_right     v4l2src device=/dev/video0 ! video/x-raw,width=320,height=240 ! videoconvert ! disp0.sink_left disparity   name=disp0 method=sgbm     disp0.src ! videoconvert ! ximagesink
  * ]|
- * Graphcut based technique is CPU intensive hence smaller framesizes are desired.
  * </refsect2>
  */
 
@@ -199,7 +225,7 @@ gst_disparity_class_init (GstDisparityClass * klass)
   gst_element_class_set_static_metadata (element_class,
       "Stereo image disparity (depth) map calculation",
       "Filter/Effect/Video",
-      "Calculates the stereo disparity map from two images.",
+      "Calculates the stereo disparity map from two (sequence of) rectified and aligned stereo images",
       "Miguel Casas-Sanchez <miguelecasassanchez@gmail.com>");
 
   gst_element_class_add_pad_template (element_class,
@@ -286,7 +312,6 @@ gst_disparity_handle_sink_event (GstPad * pad, GstObject * parent,
   GstVideoInfo info;
   gboolean res = TRUE;
 
-  //filter = GST_DISPARITY (parent);
   switch (GST_EVENT_TYPE (event)) {
     case GST_EVENT_CAPS:
     {
@@ -321,19 +346,17 @@ gst_disparity_handle_sink_event (GstPad * pad, GstObject * parent,
           gst_pad_get_name (pad), gst_caps_to_string (caps));
 
       /* Stereo Block Matching methods */
-      initialise_sbm (fs);
+      if( (NULL!=fs->cvRGB_right) && (NULL!=fs->cvRGB_left)
+	  && (NULL!=fs->cvGray_depth_map2) )
+	initialise_sbm (fs);
 
       break;
     }
     default:
       break;
   }
-
   res = gst_pad_event_default (pad, parent, event);
-
   return res;
-
-
 }
 
 static void
@@ -387,7 +410,7 @@ gst_disparity_chain_left (GstPad * pad, GstObject * parent, GstBuffer * buffer)
     fs->cvRGB_left->imageData = (char *) info.data;
 
   GST_DEBUG ("signalled right");
-  gst_buffer_unref (buffer);    // inside the lock!
+  gst_buffer_unref (buffer);
   g_cond_signal (fs->cond);
   g_mutex_unlock (fs->lock);
 
@@ -446,7 +469,10 @@ gst_disparity_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer)
         CV_MINMAX, NULL);
     cvCvtColor (fs->cvGray_depth_map2, fs->cvRGB_right, CV_GRAY2RGB);
   }
-  /*  */
+  /* Algorithm 1 is the OpenCV Stereo Block Matching, similar to the one 
+     developed by Kurt Konolige [A] and that works by using small Sum-of-absolute-
+     differences (SAD) window. See the comments on top of the file.
+  */
   else if (METHOD_SBM == fs->method) {
     cvCvtColor (fs->cvRGB_left, fs->cvGray_left, CV_RGB2GRAY);
     cvCvtColor (fs->cvRGB_right, fs->cvGray_right, CV_RGB2GRAY);
@@ -455,7 +481,9 @@ gst_disparity_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer)
         CV_MINMAX, NULL);
     cvCvtColor (fs->cvGray_depth_map2, fs->cvRGB_right, CV_GRAY2RGB);
   }
-  /* The class implements the modified S. G. Kosov algorithm */
+  /* The class implements the modified S. G. Kosov algorithm
+     See the comments on top of the file.
+  */
   else if (METHOD_VAR == fs->method) {
     cvCvtColor (fs->cvRGB_left, fs->cvGray_left, CV_RGB2GRAY);
     cvCvtColor (fs->cvRGB_right, fs->cvGray_right, CV_RGB2GRAY);
@@ -463,13 +491,16 @@ gst_disparity_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer)
     //cvNormalize(fs->cvGray_depth_map2, fs->cvGray_depth_map2, 0, 255, CV_MINMAX, NULL);
     cvCvtColor (fs->cvGray_depth_map2, fs->cvRGB_right, CV_GRAY2RGB);
   }
-  /* Graphcut based... */
+  /* The Graph Cut stereo vision algorithm (GC) introduced in [D] is a global 
+     stereo vision method. It calculates depth discontinuities by minimizing an 
+     energy function combingin a point-wise matching cost and a smoothness term. 
+     See the comments on top of the file.
+  */
   else if (METHOD_GC == fs->method) {
     cvCvtColor (fs->cvRGB_left, fs->cvGray_left, CV_RGB2GRAY);
     cvCvtColor (fs->cvRGB_right, fs->cvGray_right, CV_RGB2GRAY);
     run_sgc_iteration (fs);
-    cvNormalize (fs->cvGray_depth_map1, fs->cvGray_depth_map2, 0, 255,
-        CV_MINMAX, NULL);
+    cvConvertScale(fs->cvGray_depth_map1, fs->cvGray_depth_map2, -16.0, 0.0);
     cvCvtColor (fs->cvGray_depth_map2, fs->cvRGB_right, CV_GRAY2RGB);
   }
 
@@ -520,34 +551,33 @@ initialise_sbm (GstDisparity * filter)
       (void *) new cv::Mat (filter->cvGray_depth_map2, false);
 
   filter->sbm = (void *) new cv::StereoBM ();
-  filter->sgbm =
-      (void *) new cv::StereoSGBM (1, 16 * 2, 3, 200, 255, 1, 0, 0, 0, 0, true);
+  filter->sgbm = (void *) new cv::StereoSGBM ();
   filter->svar = (void *) new cv::StereoVar ();
   /* SGC has only two parameters on creation: NumerOfDisparities and MaxIters */
   filter->sgc = cvCreateStereoGCState (16, 2);
 
   ((cv::StereoBM *) filter->sbm)->state->SADWindowSize = 9;
-  ((cv::StereoBM *) filter->sbm)->state->numberOfDisparities = 112;
-  ((cv::StereoBM *) filter->sbm)->state->preFilterSize = 5;
-  ((cv::StereoBM *) filter->sbm)->state->preFilterCap = 61;
-  ((cv::StereoBM *) filter->sbm)->state->minDisparity = -39;
-  ((cv::StereoBM *) filter->sbm)->state->textureThreshold = 507;
+  ((cv::StereoBM *) filter->sbm)->state->numberOfDisparities = 32;
+  ((cv::StereoBM *) filter->sbm)->state->preFilterSize = 9;
+  ((cv::StereoBM *) filter->sbm)->state->preFilterCap = 32;
+  ((cv::StereoBM *) filter->sbm)->state->minDisparity = 0;
+  ((cv::StereoBM *) filter->sbm)->state->textureThreshold = 0;
   ((cv::StereoBM *) filter->sbm)->state->uniquenessRatio = 0;
   ((cv::StereoBM *) filter->sbm)->state->speckleWindowSize = 0;
-  ((cv::StereoBM *) filter->sbm)->state->speckleRange = 8;
-  ((cv::StereoBM *) filter->sbm)->state->disp12MaxDiff = 1;
+  ((cv::StereoBM *) filter->sbm)->state->speckleRange = 0;
+  ((cv::StereoBM *) filter->sbm)->state->disp12MaxDiff = 0;
 
-  // ((cv::StereoSGBM *) filter->sgbm)->SADWindowSize = 5;//3;
-  // ((cv::StereoSGBM *) filter->sgbm)->numberOfDisparities = 192;//144;
-  // ((cv::StereoSGBM *) filter->sgbm)->preFilterCap = 4;// 63;
-  // ((cv::StereoSGBM *) filter->sgbm)->minDisparity = -64;//-39;
-  // ((cv::StereoSGBM *) filter->sgbm)->uniquenessRatio = 1;//10;
-  // ((cv::StereoSGBM *) filter->sgbm)->speckleWindowSize = 150;//100;
-  // ((cv::StereoSGBM *) filter->sgbm)->speckleRange = 2;//32;
-  // ((cv::StereoSGBM *) filter->sgbm)->disp12MaxDiff = 10;//1;
-  // ((cv::StereoSGBM *) filter->sgbm)->fullDP = false;
-  // ((cv::StereoSGBM *) filter->sgbm)->P1 = 600;//216;
-  // ((cv::StereoSGBM *) filter->sgbm)->P2 = 2400;//864;
+  ((cv::StereoSGBM *) filter->sgbm)->minDisparity = 1;
+  ((cv::StereoSGBM *) filter->sgbm)->numberOfDisparities = 64;
+  ((cv::StereoSGBM *) filter->sgbm)->SADWindowSize = 3;
+  ((cv::StereoSGBM *) filter->sgbm)->P1 = 200;;
+  ((cv::StereoSGBM *) filter->sgbm)->P2 = 255;
+  ((cv::StereoSGBM *) filter->sgbm)->disp12MaxDiff = 0;
+  ((cv::StereoSGBM *) filter->sgbm)->preFilterCap = 0;
+  ((cv::StereoSGBM *) filter->sgbm)->uniquenessRatio = 0;
+  ((cv::StereoSGBM *) filter->sgbm)->speckleWindowSize = 0;
+  ((cv::StereoSGBM *) filter->sgbm)->speckleRange = 0;
+  ((cv::StereoSGBM *) filter->sgbm)->fullDP = true;
 
   /* From Opencv samples/cpp/stereo_match.cpp */
   ((cv::StereoVar *) filter->svar)->levels = 3;
