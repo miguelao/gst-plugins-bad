@@ -50,7 +50,7 @@
 #include <highgui.h>            // includes highGUI definitions
 #endif
 #ifdef HAVE_OPENCV2_HIGHGUI_HIGHGUI_C_H
-#include <opencv2/highgui/highgui_c.h>            // includes highGUI definitions
+#include <opencv2/highgui/highgui_c.h>  // includes highGUI definitions
 #endif
 
 G_BEGIN_DECLS
@@ -86,24 +86,24 @@ struct _GstDisparity
   GCond *cond;
 
   CvSize imgSize;
-  IplImage* cvRGB_right;
-  IplImage* cvRGB_left;
-  IplImage* cvGray_right;
-  IplImage* cvGray_left;
-  IplImage* cvGray_depth_map1; /*IPL_DEPTH_16S*/
-  IplImage* cvGray_depth_map2; /*IPL_DEPTH_8U*/
-  IplImage* cvGray_depth_map1_2; /*IPL_DEPTH_16S*/
+  IplImage *cvRGB_right;
+  IplImage *cvRGB_left;
+  IplImage *cvGray_right;
+  IplImage *cvGray_left;
+  IplImage *cvGray_depth_map1;  /*IPL_DEPTH_16S */
+  IplImage *cvGray_depth_map2;  /*IPL_DEPTH_8U */
+  IplImage *cvGray_depth_map1_2;        /*IPL_DEPTH_16S */
 
-  void *sbm;                      /* cv::StereoBM */
-  void *sgbm;                     /* cv::StereoSGBM */
-  void *svar;                     /* cv::StereoVar */
-  CvStereoGCState *sgc;            /* This is a C implementation */
-  void *img_right_as_cvMat_rgb;   /* cv::Mat */
-  void *img_left_as_cvMat_rgb;    /* cv::Mat */
-  void *depth_map_as_cvMat;       /* cv::Mat */
-  void *depth_map_as_cvMat2;      /* cv::Mat */
-  void *img_right_as_cvMat_gray;  /* cv::Mat */
-  void *img_left_as_cvMat_gray;   /* cv::Mat */
+  void *sbm;                    /* cv::StereoBM */
+  void *sgbm;                   /* cv::StereoSGBM */
+  void *svar;                   /* cv::StereoVar */
+  CvStereoGCState *sgc;         /* This is a C implementation */
+  void *img_right_as_cvMat_rgb; /* cv::Mat */
+  void *img_left_as_cvMat_rgb;  /* cv::Mat */
+  void *depth_map_as_cvMat;     /* cv::Mat */
+  void *depth_map_as_cvMat2;    /* cv::Mat */
+  void *img_right_as_cvMat_gray;        /* cv::Mat */
+  void *img_left_as_cvMat_gray; /* cv::Mat */
 };
 
 struct _GstDisparityClass

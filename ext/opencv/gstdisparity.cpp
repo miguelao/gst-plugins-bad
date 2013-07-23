@@ -346,9 +346,9 @@ gst_disparity_handle_sink_event (GstPad * pad, GstObject * parent,
           gst_pad_get_name (pad), gst_caps_to_string (caps));
 
       /* Stereo Block Matching methods */
-      if( (NULL!=fs->cvRGB_right) && (NULL!=fs->cvRGB_left)
-	  && (NULL!=fs->cvGray_depth_map2) )
-	initialise_sbm (fs);
+      if ((NULL != fs->cvRGB_right) && (NULL != fs->cvRGB_left)
+          && (NULL != fs->cvGray_depth_map2))
+        initialise_sbm (fs);
 
       break;
     }
@@ -472,7 +472,7 @@ gst_disparity_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer)
   /* Algorithm 1 is the OpenCV Stereo Block Matching, similar to the one 
      developed by Kurt Konolige [A] and that works by using small Sum-of-absolute-
      differences (SAD) window. See the comments on top of the file.
-  */
+   */
   else if (METHOD_SBM == fs->method) {
     cvCvtColor (fs->cvRGB_left, fs->cvGray_left, CV_RGB2GRAY);
     cvCvtColor (fs->cvRGB_right, fs->cvGray_right, CV_RGB2GRAY);
@@ -483,7 +483,7 @@ gst_disparity_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer)
   }
   /* The class implements the modified S. G. Kosov algorithm
      See the comments on top of the file.
-  */
+   */
   else if (METHOD_VAR == fs->method) {
     cvCvtColor (fs->cvRGB_left, fs->cvGray_left, CV_RGB2GRAY);
     cvCvtColor (fs->cvRGB_right, fs->cvGray_right, CV_RGB2GRAY);
@@ -495,12 +495,12 @@ gst_disparity_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer)
      stereo vision method. It calculates depth discontinuities by minimizing an 
      energy function combingin a point-wise matching cost and a smoothness term. 
      See the comments on top of the file.
-  */
+   */
   else if (METHOD_GC == fs->method) {
     cvCvtColor (fs->cvRGB_left, fs->cvGray_left, CV_RGB2GRAY);
     cvCvtColor (fs->cvRGB_right, fs->cvGray_right, CV_RGB2GRAY);
     run_sgc_iteration (fs);
-    cvConvertScale(fs->cvGray_depth_map1, fs->cvGray_depth_map2, -16.0, 0.0);
+    cvConvertScale (fs->cvGray_depth_map1, fs->cvGray_depth_map2, -16.0, 0.0);
     cvCvtColor (fs->cvGray_depth_map2, fs->cvRGB_right, CV_GRAY2RGB);
   }
 
@@ -611,8 +611,8 @@ int
 run_sbm_iteration (GstDisparity * filter)
 {
   GST_WARNING ("entering steromatching");
-  (*((cv::StereoBM *) filter->
-          sbm)) (*((cv::Mat *) filter->img_left_as_cvMat_gray),
+  (*((cv::StereoBM *) filter->sbm)) (*((cv::Mat *) filter->
+          img_left_as_cvMat_gray),
       *((cv::Mat *) filter->img_right_as_cvMat_gray),
       *((cv::Mat *) filter->depth_map_as_cvMat));
   GST_WARNING ("leaving steromatching");
@@ -623,8 +623,8 @@ int
 run_sgbm_iteration (GstDisparity * filter)
 {
   GST_WARNING ("entering steroGmatching");
-  (*((cv::StereoSGBM *) filter->
-          sgbm)) (*((cv::Mat *) filter->img_left_as_cvMat_gray),
+  (*((cv::StereoSGBM *) filter->sgbm)) (*((cv::Mat *) filter->
+          img_left_as_cvMat_gray),
       *((cv::Mat *) filter->img_right_as_cvMat_gray),
       *((cv::Mat *) filter->depth_map_as_cvMat));
   GST_WARNING ("leaving steroGmatching");
@@ -635,8 +635,8 @@ int
 run_svar_iteration (GstDisparity * filter)
 {
   GST_WARNING ("entering steroVarmatching");
-  (*((cv::StereoVar *) filter->
-          svar)) (*((cv::Mat *) filter->img_left_as_cvMat_gray),
+  (*((cv::StereoVar *) filter->svar)) (*((cv::Mat *) filter->
+          img_left_as_cvMat_gray),
       *((cv::Mat *) filter->img_right_as_cvMat_gray),
       *((cv::Mat *) filter->depth_map_as_cvMat2));
   GST_WARNING ("leaving steroVarmatching");
