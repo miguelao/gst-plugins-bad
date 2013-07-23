@@ -43,6 +43,10 @@
 /*
  * SECTION:element-disparity
  *
+ * This element computes a disparity map from two stereo images, meaning each one coming from a
+ * different camera, both looking at the same scene and relatively close to each other - more on
+ * this below. The disparity map is a proxy of the depth of a scene as seen from the camera.
+ *
  * Assumptions: Input images are stereo, rectified and aligned. If these conditions are not met,
  * results can be poor. Both cameras should be looking parallel to maximize the overlapping
  * stereo area, and should not have objects too close or too far. The algorithms implemented here
@@ -225,7 +229,7 @@ gst_disparity_class_init (GstDisparityClass * klass)
   gst_element_class_set_static_metadata (element_class,
       "Stereo image disparity (depth) map calculation",
       "Filter/Effect/Video",
-      "Calculates the stereo disparity map from two (sequence of) rectified and aligned stereo images",
+      "Calculates the stereo disparity map from two (sequences of) rectified and aligned stereo images",
       "Miguel Casas-Sanchez <miguelecasassanchez@gmail.com>");
 
   gst_element_class_add_pad_template (element_class,
