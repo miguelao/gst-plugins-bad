@@ -46,12 +46,6 @@
 
 #include <gst/gst.h>
 #include <cv.h>
-#ifdef HAVE_HIGHGUI_H
-#include <highgui.h>            // includes highGUI definitions
-#endif
-#ifdef HAVE_OPENCV2_HIGHGUI_HIGHGUI_C_H
-#include <opencv2/highgui/highgui_c.h>  // includes highGUI definitions
-#endif
 
 G_BEGIN_DECLS
 /* #defines don't like whitespacey bits */
@@ -84,6 +78,7 @@ struct _GstDisparity
   GstBuffer *buffer_left;
   GMutex *lock;
   GCond *cond;
+  gboolean flushing;
 
   CvSize imgSize;
   IplImage *cvRGB_right;

@@ -160,7 +160,7 @@ gst_disparity_method_get_type (void)
       {METHOD_SBM, "Global block matching algorithm", "sbm"},
       {METHOD_SGBM, "Semi-global block matching algorithm", "sgbm"},
       {METHOD_VAR, "Variational matching algorithm", "svar"},
-      {METHOD_GC, "Graph=cut based matching algorithm", "sgc"},
+      {METHOD_GC, "Graph-cut based matching algorithm", "sgc"},
       {0, NULL, NULL},
     };
     etype = g_enum_register_static ("GstDisparityMethod", values);
@@ -183,12 +183,15 @@ static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE ("src",
     );
 
 G_DEFINE_TYPE (GstDisparity, gst_disparity, GST_TYPE_ELEMENT);
+static GstElementClass *parent_class = NULL;
 
 static void gst_disparity_finalize (GObject * object);
 static void gst_disparity_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec);
 static void gst_disparity_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec);
+static GstStateChangeReturn gst_disparity_change_state (GstElement * element,
+    GstStateChange transition);
 
 static gboolean gst_disparity_handle_sink_event (GstPad * pad,
     GstObject * parent, GstEvent * event);
@@ -225,6 +228,9 @@ gst_disparity_class_init (GstDisparityClass * klass)
           "Stereo matching method to use",
           GST_TYPE_DISPARITY_METHOD, DEFAULT_METHOD,
           (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+
+  element_class->change_state = gst_disparity_change_state;
+  parent_class = (GstElementClass *) g_type_class_peek_parent (klass);
 
   gst_element_class_set_static_metadata (element_class,
       "Stereo image disparity (depth) map calculation",
@@ -306,16 +312,50 @@ gst_disparity_get_property (GObject * object, guint prop_id,
 }
 
 /* GstElement vmethod implementations */
+static GstStateChangeReturn
+gst_disparity_change_state (GstElement * element, GstStateChange transition)
+{
+  GstStateChangeReturn ret = GST_STATE_CHANGE_SUCCESS;
+  GstDisparity *fs = GST_DISPARITY (element);
+  switch (transition) {
+    case GST_STATE_CHANGE_PAUSED_TO_READY:
+      fs->flushing = true;
+      g_cond_signal (fs->cond);
+      break;
+    case GST_STATE_CHANGE_READY_TO_PAUSED:
+      fs->flushing = false;
+      break;
+    default:
+      break;
+  }
+
+  ret = GST_ELEMENT_CLASS (parent_class)->change_state (element, transition);
+
+  switch (transition) {
+    case GST_STATE_CHANGE_PAUSED_TO_READY:
+      fs->flushing = true;
+      g_cond_signal (fs->cond);
+      break;
+    case GST_STATE_CHANGE_READY_TO_PAUSED:
+      fs->flushing = false;
+      break;
+    default:
+      break;
+  }
+  return ret;
+}
 
 /* this function handles the link with other elements */
 static gboolean
 gst_disparity_handle_sink_event (GstPad * pad, GstObject * parent,
     GstEvent * event)
 {
-  GstDisparity *fs;
+  GstDisparity *fs = GST_DISPARITY (parent);
   GstVideoInfo info;
   gboolean res = TRUE;
 
+  /* Critical section since both pads handle event sinking simultaneously */
+  g_mutex_lock (fs->lock);
   switch (GST_EVENT_TYPE (event)) {
     case GST_EVENT_CAPS:
     {
@@ -323,9 +363,8 @@ gst_disparity_handle_sink_event (GstPad * pad, GstObject * parent,
       gst_event_parse_caps (event, &caps);
       gst_video_info_from_caps (&info, caps);
 
-      GST_WARNING (" Negotiating caps via event (%s) %s",
-          gst_pad_get_name (pad), gst_caps_to_string (caps));
-      fs = GST_DISPARITY (parent);
+      GST_WARNING_OBJECT (pad, " Negotiating caps via event, %"
+          GST_PTR_FORMAT, caps);
 
       fs->width = info.width;
       fs->height = info.height;
@@ -346,8 +385,8 @@ gst_disparity_handle_sink_event (GstPad * pad, GstObject * parent,
       fs->cvGray_depth_map2 = cvCreateImage (fs->imgSize, IPL_DEPTH_8U, 1);
       fs->cvGray_depth_map1_2 = cvCreateImage (fs->imgSize, IPL_DEPTH_16S, 1);
 
-      GST_DEBUG (" Negotiated caps via event (%s) %s",
-          gst_pad_get_name (pad), gst_caps_to_string (caps));
+      GST_DEBUG_OBJECT (pad, " Negotiated caps via event, %"
+          GST_PTR_FORMAT, caps);
 
       /* Stereo Block Matching methods */
       if ((NULL != fs->cvRGB_right) && (NULL != fs->cvRGB_left)
@@ -359,6 +398,7 @@ gst_disparity_handle_sink_event (GstPad * pad, GstObject * parent,
     default:
       break;
   }
+  g_mutex_unlock (fs->lock);
   res = gst_pad_event_default (pad, parent, event);
   return res;
 }
@@ -398,12 +438,16 @@ gst_disparity_chain_left (GstPad * pad, GstObject * parent, GstBuffer * buffer)
   GstMapInfo info;
 
   fs = GST_DISPARITY (parent);
-  GST_DEBUG ("processing frame from left");
+  GST_DEBUG_OBJECT (pad, "processing frame from left");
+  if (fs->flushing)
+    return GST_FLOW_FLUSHING;
   g_mutex_lock (fs->lock);
   if (fs->buffer_left) {
-    GST_INFO (" right is busy, wait and hold");
+    GST_DEBUG_OBJECT (pad, " right is busy, wait and hold");
     g_cond_wait (fs->cond, fs->lock);
-    GST_INFO (" right is free, continuing");
+    GST_DEBUG_OBJECT (pad, " right is free, continuing");
+    if (fs->flushing)
+      return GST_FLOW_FLUSHING;
   }
   fs->buffer_left = buffer;
 
@@ -413,7 +457,7 @@ gst_disparity_chain_left (GstPad * pad, GstObject * parent, GstBuffer * buffer)
   if (fs->cvRGB_left)
     fs->cvRGB_left->imageData = (char *) info.data;
 
-  GST_DEBUG ("signalled right");
+  GST_DEBUG_OBJECT (pad, "signalled right");
   gst_buffer_unref (buffer);
   g_cond_signal (fs->cond);
   g_mutex_unlock (fs->lock);
@@ -429,12 +473,16 @@ gst_disparity_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer)
   GstFlowReturn ret;
 
   fs = GST_DISPARITY (parent);
-  GST_DEBUG ("processing frame from right");
+  GST_DEBUG_OBJECT (pad, "processing frame from right");
+  if (fs->flushing)
+    return GST_FLOW_FLUSHING;
   g_mutex_lock (fs->lock);
   if (fs->buffer_left == NULL) {
-    GST_INFO (" left has not provided another frame yet, waiting");
+    GST_DEBUG_OBJECT (pad, " left has not provided another frame yet, waiting");
     g_cond_wait (fs->cond, fs->lock);
-    GST_INFO (" left has just provided a frame, continuing");
+    GST_DEBUG_OBJECT (pad, " left has just provided a frame, continuing");
+    if (fs->flushing)
+      return GST_FLOW_FLUSHING;
   }
   if (!gst_buffer_map (buffer, &info, (GstMapFlags) GST_MAP_READWRITE)) {
     g_mutex_unlock (fs->lock);
@@ -445,8 +493,9 @@ gst_disparity_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer)
 
 
   /* Here do the business */
-  GST_DEBUG ("comparing frames, %d width=%dp height=%dp channels=%d",
-      (int) info.size, fs->width, fs->height, fs->actualChannels);
+  GST_DEBUG_OBJECT (pad,
+      "comparing frames, %d width=%dp height=%dp channels=%d", (int) info.size,
+      fs->width, fs->height, fs->actualChannels);
 
   /* Stereo corresponding using semi-global block matching. According to OpenCV:
      "" The class implements modified H. Hirschmuller algorithm HH08 . The main 
@@ -492,7 +541,6 @@ gst_disparity_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer)
     cvCvtColor (fs->cvRGB_left, fs->cvGray_left, CV_RGB2GRAY);
     cvCvtColor (fs->cvRGB_right, fs->cvGray_right, CV_RGB2GRAY);
     run_svar_iteration (fs);
-    //cvNormalize(fs->cvGray_depth_map2, fs->cvGray_depth_map2, 0, 255, CV_MINMAX, NULL);
     cvCvtColor (fs->cvGray_depth_map2, fs->cvRGB_right, CV_GRAY2RGB);
   }
   /* The Graph Cut stereo vision algorithm (GC) introduced in [D] is a global 
@@ -509,13 +557,12 @@ gst_disparity_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer)
   }
 
 
-  GST_DEBUG (" right has finished");
+  GST_DEBUG_OBJECT (pad, " right has finished");
   fs->buffer_left = NULL;
   g_cond_signal (fs->cond);
   g_mutex_unlock (fs->lock);
 
   ret = gst_pad_push (fs->srcpad, buffer);
-  //gst_object_unref (fs);
   return ret;
 }
 
@@ -614,47 +661,39 @@ initialise_sbm (GstDisparity * filter)
 int
 run_sbm_iteration (GstDisparity * filter)
 {
-  GST_WARNING ("entering steromatching");
-  (*((cv::StereoBM *) filter->sbm)) (*((cv::Mat *) filter->
-          img_left_as_cvMat_gray),
+  (*((cv::StereoBM *) filter->
+          sbm)) (*((cv::Mat *) filter->img_left_as_cvMat_gray),
       *((cv::Mat *) filter->img_right_as_cvMat_gray),
       *((cv::Mat *) filter->depth_map_as_cvMat));
-  GST_WARNING ("leaving steromatching");
   return (0);
 }
 
 int
 run_sgbm_iteration (GstDisparity * filter)
 {
-  GST_WARNING ("entering steroGmatching");
-  (*((cv::StereoSGBM *) filter->sgbm)) (*((cv::Mat *) filter->
-          img_left_as_cvMat_gray),
+  (*((cv::StereoSGBM *) filter->
+          sgbm)) (*((cv::Mat *) filter->img_left_as_cvMat_gray),
       *((cv::Mat *) filter->img_right_as_cvMat_gray),
       *((cv::Mat *) filter->depth_map_as_cvMat));
-  GST_WARNING ("leaving steroGmatching");
   return (0);
 }
 
 int
 run_svar_iteration (GstDisparity * filter)
 {
-  GST_WARNING ("entering steroVarmatching");
-  (*((cv::StereoVar *) filter->svar)) (*((cv::Mat *) filter->
-          img_left_as_cvMat_gray),
+  (*((cv::StereoVar *) filter->
+          svar)) (*((cv::Mat *) filter->img_left_as_cvMat_gray),
       *((cv::Mat *) filter->img_right_as_cvMat_gray),
       *((cv::Mat *) filter->depth_map_as_cvMat2));
-  GST_WARNING ("leaving steroVarmatching");
   return (0);
 }
 
 int
 run_sgc_iteration (GstDisparity * filter)
 {
-  GST_WARNING ("entering steroGCmatching");
   cvFindStereoCorrespondenceGC (filter->cvGray_left,
       filter->cvGray_right, filter->cvGray_depth_map1,
       filter->cvGray_depth_map1_2, filter->sgc, 0);
-  GST_WARNING ("leaving steroGCmatching");
   return (0);
 }
 
