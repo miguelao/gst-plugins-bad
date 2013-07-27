@@ -1,7 +1,7 @@
 plugin_LTLIBRARIES = libgstopenni2.la
 
 # sources used to compile this plug-in
-libgstopenni2_la_SOURCES = gstopenni2.c \
+libgstopenni2_la_SOURCES = gstopenni2.cpp \
 			   gstopenni2src.cpp
 
 libgstopenni2_la_CXXFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) $(GST_CXXFLAGS) $(OPENNI2_CFLAGS)
