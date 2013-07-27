@@ -35,6 +35,9 @@
  *  http://people.cs.pitt.edu/~chang/1635/proj11/kinectRecord
  * </programlisting>
  *
+ * <programlisting>
+  LD_LIBRARY_PATH=/usr/lib/OpenNI2/Drivers/ GST_DEBUG=2 gst-launch-1.0 --gst-debug=openni2src:5   openni2src location='~/Downloads/mr.oni' ! fakesink
+ * </programlisting>
  * </para>
  * </refsect2>
  */
@@ -44,7 +47,6 @@
 #endif
 
 #include "gstopenni2src.h"
-#include <OpenNI.h>
 
 
 
@@ -176,13 +178,77 @@ static GstFlowReturn
 gst_openni2_src_create (GstPushSrc * psrc, GstBuffer ** outbuf)
 {
   GstOpenni2Src *src = GST_OPENNI2_SRC (psrc);
-  GstFlowReturn ret = GST_FLOW_OK;
 
   gssize size = 128;            // hack!!
   (*outbuf) = gst_buffer_new_allocate (NULL, size, NULL);
 
-  GST_LOG_OBJECT (src, "Create finished: %d", ret);
-  return ret;
+  /****** OpenNI2 specific stuff *********************************/
+  openni::Status rc = openni::STATUS_OK;
+  const char* deviceURI = openni::ANY_DEVICE;
+  if (src->uri_name)
+    deviceURI = src->uri_name;
+
+  rc = openni::OpenNI::initialize();
+  if (rc != openni::STATUS_OK) {
+    GST_ERROR_OBJECT(src, "Initialization failed: %s",
+		     openni::OpenNI::getExtendedError());
+    openni::OpenNI::shutdown();
+    return GST_FLOW_ERROR;
+  }
+
+  rc = src->device.open(deviceURI);
+  if (rc != openni::STATUS_OK) {
+    GST_ERROR_OBJECT(src, "Device (%s) open failed: %s", deviceURI,
+		     openni::OpenNI::getExtendedError());
+    openni::OpenNI::shutdown();
+    return GST_FLOW_ERROR;
+  }
+
+  /** depth sensor **/
+  rc = src->depth.create(src->device, openni::SENSOR_DEPTH);
+  if (rc == openni::STATUS_OK) {
+    rc = src->depth.start();
+    if (rc != openni::STATUS_OK){
+      GST_ERROR_OBJECT(src, "%s", openni::OpenNI::getExtendedError());
+      src->depth.destroy();
+    }
+  }
+  else
+    GST_WARNING_OBJECT(src, "Couldn't find depth stream: %s", 
+		       openni::OpenNI::getExtendedError());
+
+  /** color sensor **/
+  rc = src->color.create(src->device, openni::SENSOR_COLOR);
+  if (rc == openni::STATUS_OK) {
+    rc = src->color.start();
+    if (rc != openni::STATUS_OK) {
+      GST_ERROR_OBJECT(src, "Couldn't start color stream: %s ", 
+	     openni::OpenNI::getExtendedError());
+      src->color.destroy();
+    }
+
+    /* All this code should go to query_caps */
+    //const openni::SensorInfo* info;
+    //info = &(src->color.getSensorInfo());
+    //const openni::Array<openni::VideoMode>& caps = info->getSupportedVideoModes();
+    //for( int i = 0; i < caps.getSize(); ++i){
+    //  printf("Supported video mode (%dx%d)@%d fps \n", 
+    //	     caps[i].getResolutionX(), caps[i].getResolutionY(), caps[i].getFps());
+    //}
+  }
+  else
+    GST_WARNING_OBJECT(src, "Couldn't find color stream: %s", 
+		       openni::OpenNI::getExtendedError());
+ 
+
+  if (!src->depth.isValid() && !src->color.isValid()){
+    GST_ERROR_OBJECT(src, "SimpleViewer: No valid streams. Exiting\n");
+    openni::OpenNI::shutdown();
+    return GST_FLOW_ERROR;
+  }
+
+  GST_LOG_OBJECT (src, "Create finished");
+  return GST_FLOW_OK;
 }
 
 
