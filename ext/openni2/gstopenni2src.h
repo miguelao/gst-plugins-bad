@@ -23,6 +23,8 @@
 #include <gst/base/gstpushsrc.h>
 #include <stdio.h>
 
+#include <OpenNI.h>
+
 G_BEGIN_DECLS
 #define GST_TYPE_OPENNI2_SRC \
   (gst_openni2_src_get_type())
@@ -77,6 +79,10 @@ struct _GstOpenni2Src
    * stablish a maximum iteration value to the IS_RECORDING message 
    */
   guint wait_to_transfer;
+
+  /* OpenNI2 needed variables */
+  openni::Device device;
+  openni::VideoStream depth, color;
 };
 
 struct _GstOpenni2SrcClass
