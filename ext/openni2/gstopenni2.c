@@ -22,10 +22,14 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+#include <gst/gst.h>
+#include "gstopenni2src.h"
 
 static gboolean
 plugin_init (GstPlugin * plugin)
 {
+  if (!gst_openni2src_plugin_init (plugin))
+    return FALSE;
 
   return TRUE;
 }
