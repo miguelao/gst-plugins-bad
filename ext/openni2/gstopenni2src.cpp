@@ -89,9 +89,11 @@ static gboolean gst_openni2_src_handle_query (GstPad * pad, GstQuery * query);
 static gboolean gst_openni2_src_handle_event (GstPad * pad, GstEvent * event);
 #endif
 
+static GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src);
+
 G_DEFINE_TYPE (GstOpenni2Src, gst_openni2_src, GST_TYPE_PUSH_SRC)
 
-     static void gst_openni2_src_class_init (GstOpenni2SrcClass * klass)
+static void gst_openni2_src_class_init (GstOpenni2SrcClass * klass)
 {
   GObjectClass *gobject_class;
   GstPushSrcClass *gstpushsrc_class;
@@ -182,73 +184,8 @@ gst_openni2_src_create (GstPushSrc * psrc, GstBuffer ** outbuf)
   gssize size = 128;            // hack!!
   (*outbuf) = gst_buffer_new_allocate (NULL, size, NULL);
 
-  /****** OpenNI2 specific stuff *********************************/
-  openni::Status rc = openni::STATUS_OK;
-  const char* deviceURI = openni::ANY_DEVICE;
-  if (src->uri_name)
-    deviceURI = src->uri_name;
-
-  rc = openni::OpenNI::initialize();
-  if (rc != openni::STATUS_OK) {
-    GST_ERROR_OBJECT(src, "Initialization failed: %s",
-		     openni::OpenNI::getExtendedError());
-    openni::OpenNI::shutdown();
-    return GST_FLOW_ERROR;
-  }
-
-  rc = src->device.open(deviceURI);
-  if (rc != openni::STATUS_OK) {
-    GST_ERROR_OBJECT(src, "Device (%s) open failed: %s", deviceURI,
-		     openni::OpenNI::getExtendedError());
-    openni::OpenNI::shutdown();
-    return GST_FLOW_ERROR;
-  }
-
-  /** depth sensor **/
-  rc = src->depth.create(src->device, openni::SENSOR_DEPTH);
-  if (rc == openni::STATUS_OK) {
-    rc = src->depth.start();
-    if (rc != openni::STATUS_OK){
-      GST_ERROR_OBJECT(src, "%s", openni::OpenNI::getExtendedError());
-      src->depth.destroy();
-    }
-  }
-  else
-    GST_WARNING_OBJECT(src, "Couldn't find depth stream: %s", 
-		       openni::OpenNI::getExtendedError());
-
-  /** color sensor **/
-  rc = src->color.create(src->device, openni::SENSOR_COLOR);
-  if (rc == openni::STATUS_OK) {
-    rc = src->color.start();
-    if (rc != openni::STATUS_OK) {
-      GST_ERROR_OBJECT(src, "Couldn't start color stream: %s ", 
-	     openni::OpenNI::getExtendedError());
-      src->color.destroy();
-    }
-
-    /* All this code should go to query_caps */
-    //const openni::SensorInfo* info;
-    //info = &(src->color.getSensorInfo());
-    //const openni::Array<openni::VideoMode>& caps = info->getSupportedVideoModes();
-    //for( int i = 0; i < caps.getSize(); ++i){
-    //  printf("Supported video mode (%dx%d)@%d fps \n", 
-    //	     caps[i].getResolutionX(), caps[i].getResolutionY(), caps[i].getFps());
-    //}
-  }
-  else
-    GST_WARNING_OBJECT(src, "Couldn't find color stream: %s", 
-		       openni::OpenNI::getExtendedError());
- 
-
-  if (!src->depth.isValid() && !src->color.isValid()){
-    GST_ERROR_OBJECT(src, "SimpleViewer: No valid streams. Exiting\n");
-    openni::OpenNI::shutdown();
-    return GST_FLOW_ERROR;
-  }
-
-  GST_LOG_OBJECT (src, "Create finished");
-  return GST_FLOW_OK;
+  /* OpenNI2 initialisation inside this function */
+  return gst_openni2src_initialise_devices(src);
 }
 
 
@@ -476,4 +413,115 @@ gst_openni2src_plugin_init (GstPlugin * plugin)
 
   return gst_element_register (plugin, "openni2src", GST_RANK_NONE,
       GST_TYPE_OPENNI2_SRC);
+}
+
+
+
+
+GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src)
+{
+  /****** OpenNI2 specific stuff *********************************/
+  openni::Status rc = openni::STATUS_OK;
+  const char* deviceURI = openni::ANY_DEVICE;
+  if (src->uri_name)
+    deviceURI = src->uri_name;
+
+  rc = openni::OpenNI::initialize();
+  if (rc != openni::STATUS_OK) {
+    GST_ERROR_OBJECT(src, "Initialization failed: %s",
+		     openni::OpenNI::getExtendedError());
+    openni::OpenNI::shutdown();
+    return GST_FLOW_ERROR;
+  }
+
+  rc = src->device.open(deviceURI);
+  if (rc != openni::STATUS_OK) {
+    GST_ERROR_OBJECT(src, "Device (%s) open failed: %s", deviceURI,
+		     openni::OpenNI::getExtendedError());
+    openni::OpenNI::shutdown();
+    return GST_FLOW_ERROR;
+  }
+
+  /** depth sensor **/
+  rc = src->depth.create(src->device, openni::SENSOR_DEPTH);
+  if (rc == openni::STATUS_OK) {
+    rc = src->depth.start();
+    if (rc != openni::STATUS_OK){
+      GST_ERROR_OBJECT(src, "%s", openni::OpenNI::getExtendedError());
+      src->depth.destroy();
+    }
+  }
+  else
+    GST_WARNING_OBJECT(src, "Couldn't find depth stream: %s", 
+		       openni::OpenNI::getExtendedError());
+
+  /** color sensor **/
+  rc = src->color.create(src->device, openni::SENSOR_COLOR);
+  if (rc == openni::STATUS_OK) {
+    rc = src->color.start();
+    if (rc != openni::STATUS_OK) {
+      GST_ERROR_OBJECT(src, "Couldn't start color stream: %s ", 
+	     openni::OpenNI::getExtendedError());
+      src->color.destroy();
+    }
+
+    /* All this code should go to query_caps */
+    //const openni::SensorInfo* info;
+    //info = &(src->color.getSensorInfo());
+    //const openni::Array<openni::VideoMode>& caps = info->getSupportedVideoModes();
+    //for( int i = 0; i < caps.getSize(); ++i){
+    //  printf("Supported video mode (%dx%d)@%d fps \n", 
+    //	     caps[i].getResolutionX(), caps[i].getResolutionY(), caps[i].getFps());
+    //}
+  }
+  else
+    GST_WARNING_OBJECT(src, "Couldn't find color stream: %s", 
+		       openni::OpenNI::getExtendedError());
+ 
+
+  if (!src->depth.isValid() && !src->color.isValid()){
+    GST_ERROR_OBJECT(src, "No valid streams. Exiting\n");
+    openni::OpenNI::shutdown();
+    return GST_FLOW_ERROR;
+  }
+
+
+  if (!src->depth.isValid() && !src->color.isValid()){
+    src->depthVideoMode = src->depth.getVideoMode();
+    src->colorVideoMode = src->color.getVideoMode();
+
+    int depthWidth = src->depthVideoMode.getResolutionX();
+    int depthHeight = src->depthVideoMode.getResolutionY();
+    int colorWidth = src->colorVideoMode.getResolutionX();
+    int colorHeight = src->colorVideoMode.getResolutionY();
+    
+    if (depthWidth == colorWidth && depthHeight == colorHeight){
+      src->width = depthWidth;
+      src->height = depthHeight;
+    }
+    else {
+      GST_ERROR_OBJECT(src, "Error - expect color and depth to be"
+        " in same resolution: D: %dx%d vs C: %dx%d",
+	       depthWidth, depthHeight,
+	       colorWidth, colorHeight);
+      return GST_FLOW_ERROR;
+    }
+  }
+  else if (src->depth.isValid()) {
+    src->depthVideoMode = src->depth.getVideoMode();
+    src->width = src->depthVideoMode.getResolutionX();
+    src->height = src->depthVideoMode.getResolutionY();
+  }
+  else if (src->color.isValid()){
+    src->colorVideoMode = src->color.getVideoMode();
+    src->width = src->colorVideoMode.getResolutionX();
+    src->height = src->colorVideoMode.getResolutionY();
+  }
+  else{
+    GST_ERROR_OBJECT(src, "Expected at least one of the streams to be valid.");
+    return GST_FLOW_ERROR;
+  }
+  GST_WARNING_OBJECT(src, "resolution: %dx%d", src->width, src->height);
+  
+  return GST_FLOW_OK;
 }
