@@ -48,8 +48,6 @@
 
 #include "gstopenni2src.h"
 
-
-
 GST_DEBUG_CATEGORY_STATIC (openni2src_debug);
 static GstStaticPadTemplate srctemplate = GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
@@ -64,19 +62,21 @@ enum
   PROP_LOCATION,
 };
 
+#define SAMPLE_READ_WAIT_TIMEOUT 2000 //2000ms
+
 G_DEFINE_TYPE (GstOpenni2Src, gst_openni2_src, GST_TYPE_PUSH_SRC)
 
+/* GObject methods */
 static void gst_openni2_src_dispose (GObject * object);
 static void gst_openni2_src_finalize (GObject * gobject);
+static void gst_openni2_src_set_property (GObject * object, guint prop_id, 
+                                          const GValue * value, GParamSpec * pspec);
+static void gst_openni2_src_get_property (GObject * object, guint prop_id, 
+                                          GValue * value, GParamSpec * pspec);
 
 /* basesrc methods */
 static gboolean gst_openni2_src_start (GstBaseSrc * bsrc);
 static gboolean gst_openni2_src_stop (GstBaseSrc * bsrc);
-static gboolean gst_openni2_src_get_size (GstBaseSrc * bsrc, guint64 * size);
-static void gst_openni2_src_set_property (GObject * object,
-    guint prop_id, const GValue * value, GParamSpec * pspec);
-static void gst_openni2_src_get_property (GObject * object,
-    guint prop_id, GValue * value, GParamSpec * pspec);
 
 /* element methods */
 static GstStateChangeReturn
@@ -86,8 +86,11 @@ gst_openni2_src_change_state (GstElement * element, GstStateChange transition);
 static GstFlowReturn gst_openni2src_fill (GstPushSrc * src, GstBuffer * buf);
 
 /* OpenNI2 interaction methods */
-static GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src);
-static void gst_openni2src_finalise_devices(GstOpenni2Src *src);
+static gboolean openni2_initialise(GstOpenni2Src *src);
+static GstFlowReturn openni2_initialise_devices(GstOpenni2Src *src);
+static GstFlowReturn openni2_read_GstBuffer(GstOpenni2Src *src,
+                                            GstBuffer * buf)
+static void openni2_finalise(GstOpenni2Src *src);
 
 static void gst_openni2_src_class_init (GstOpenni2SrcClass * klass)
 {
@@ -109,12 +112,11 @@ static void gst_openni2_src_class_init (GstOpenni2SrcClass * klass)
       (gobject_class, PROP_LOCATION,
       g_param_spec_string ("location", "Location",
           "Source uri, can be a file or a device.",
-          "", (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+          (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
 
   basesrc_class->start = GST_DEBUG_FUNCPTR (gst_openni2_src_start);
   basesrc_class->stop = GST_DEBUG_FUNCPTR (gst_openni2_src_stop);
-  basesrc_class->get_size = GST_DEBUG_FUNCPTR (gst_openni2_src_get_size);
 
   gst_element_class_add_pad_template (element_class,
       gst_static_pad_template_get (&srctemplate));
@@ -127,6 +129,9 @@ static void gst_openni2_src_class_init (GstOpenni2SrcClass * klass)
   element_class->change_state = gst_openni2_src_change_state;
 
   pushsrc_class->fill = GST_DEBUG_FUNCPTR (gst_openni2src_fill);
+
+  GST_DEBUG_CATEGORY_INIT (openni2src_debug, "openni2src", 0,
+                           "OpenNI2 Device Source");
 }
 
 static void
@@ -135,7 +140,7 @@ gst_openni2_src_init (GstOpenni2Src * ni2src)
   gst_base_src_set_format (GST_BASE_SRC (ni2src), GST_FORMAT_BYTES);
 
   /* OpenNI2 initialisation inside this function */
-  gst_openni2src_initialise_devices(ni2src);
+  gst_openni2src_initialise_openni2(ni2src);
 }
 
 static void
@@ -149,98 +154,83 @@ gst_openni2_src_finalize (GObject * gobject)
 {
   GstOpenni2Src *ni2src = GST_OPENNI2_SRC (gobject);
 
-  gst_openni2src_finalise_devices (ni2src);
+  openni2_finalise (ni2src);
 
   if (ni2src->uri_name) {
     g_free (ni2src->uri_name);
     ni2src->uri_name = NULL;
   }
 
-
   G_OBJECT_CLASS (parent_class)->finalize (gobject);
 }
 
+static void
+gst_openni2_src_set_property (GObject * object, guint prop_id,
+                              const GValue * value, GParamSpec * pspec)
+{
+  GstOpenni2Src *openni2src = GST_OPENNI2_SRC (object);
 
-/*
- * create a socket for connecting to remote server 
+  GST_OBJECT_LOCK (openni2src);
+  switch (prop_id) {
+    case PROP_LOCATION:
+      if (!g_value_get_string (value)) {
+        GST_WARNING ("location property cannot be NULL");
+        break;
+      }
+
+      if (openni2src->uri_name != NULL) {
+        g_free (openni2src->uri_name);
+        openni2src->uri_name = NULL;
+      }
+      openni2src->uri_name = g_value_dup_string (value);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
+
+  GST_OBJECT_UNLOCK (openni2src);
+}
+
+static void
+gst_openni2_src_get_property (GObject * object, guint prop_id,
+                              GValue * value, GParamSpec * pspec)
+{
+  GstOpenni2Src *openni2src = GST_OPENNI2_SRC (object);
+
+  GST_OBJECT_LOCK (openni2src);
+  switch (prop_id) {
+    case PROP_LOCATION:
+      g_value_set_string (value, openni2src->uri_name);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
+  GST_OBJECT_UNLOCK (openni2src);
+}
+
+/* Interesting info from gstv4l2src.c:
+ * "start and stop are not symmetric -- start will open the device, but not start
+ * capture. it's setcaps that will start capture, which is called via basesrc's
+ * negotiate method. stop will both stop capture and close the device."
  */
 static gboolean
 gst_openni2_src_start (GstBaseSrc * bsrc)
 {
   GstOpenni2Src *src = GST_OPENNI2_SRC (bsrc);
 
-  GString *chain_id_local = NULL;
-  GstMessage *msg;
-
-  msg = gst_message_new_duration_changed (GST_OBJECT (src));
-  gst_element_post_message (GST_ELEMENT (src), msg);
-
-  gst_element_post_message (GST_ELEMENT (src),
-      gst_message_new_duration_changed (GST_OBJECT (src)));
-#if 0
-  gst_pad_push_event (GST_BASE_SRC_PAD (GST_BASE_SRC (src)),
-      gst_event_new_new_segment (TRUE, 1.0,
-          GST_FORMAT_BYTES, 0, src->content_size, 0));
-#endif
-
-  if (chain_id_local != NULL) {
-    g_string_free (chain_id_local, TRUE);
-    chain_id_local = NULL;
-  }
-
-  return TRUE;
+  return (GST_FLOW_OK == openni2_initialise_devices(src));
 }
 
-static gboolean
-gst_openni2_src_get_size (GstBaseSrc * bsrc, guint64 * size)
-{
-  gboolean ret = TRUE;
-
-  return ret;
-}
-
-/*
- * close the socket and associated resources used both to recover from
- * errors and go to NULL state 
- */
 static gboolean
 gst_openni2_src_stop (GstBaseSrc * bsrc)
 {
   GstOpenni2Src *src = GST_OPENNI2_SRC (bsrc);
 
-  gst_openni2src_finalise_devices (src);
+  openni2_finalise (src);
   return TRUE;
 }
-
-#if 0
-static gboolean
-gst_openni2_src_handle_event (GstPad * pad, GstEvent * event)
-{
-  GstOpenni2Src *src = GST_OPENNI2_SRC (GST_PAD_PARENT (pad));
-  gint64 cont_size = 0;
-  gboolean ret = TRUE;
-
-  switch (GST_EVENT_TYPE (event)) {
-    case GST_EVENT_EOS:
-      if (src->live_tv) {
-        cont_size = gst_openni2_src_get_position (src);
-        if (cont_size > src->content_size) {
-          src->content_size = cont_size;
-          src->eos = FALSE;
-        } else {
-          src->eos = TRUE;
-          gst_element_set_state (GST_ELEMENT (src), GST_STATE_NULL);
-          gst_element_set_locked_state (GST_ELEMENT (src), FALSE);
-        }
-      }
-      break;
-    default:
-      ret = gst_pad_event_default (pad, event);
-  }
-  GST_DEBUG_OBJECT (src, "HANDLE EVENT %d", ret);
-  return ret;
-}
-#endif
 
 static GstStateChangeReturn
 gst_openni2_src_change_state (GstElement * element, GstStateChange transition)
@@ -270,7 +260,7 @@ gst_openni2_src_change_state (GstElement * element, GstStateChange transition)
 
   switch (transition) {
     case GST_STATE_CHANGE_READY_TO_NULL:
-      gst_openni2src_finalise_devices (src);
+      openni2_finalise (src);
       break;
     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
     case GST_STATE_CHANGE_PAUSED_TO_READY:
@@ -282,92 +272,48 @@ gst_openni2_src_change_state (GstElement * element, GstStateChange transition)
   return ret;
 }
 
-static void
-gst_openni2_src_set_property (GObject * object, guint prop_id,
-    const GValue * value, GParamSpec * pspec)
-{
-  GstOpenni2Src *openni2src = GST_OPENNI2_SRC (object);
-
-  GST_OBJECT_LOCK (openni2src);
-  switch (prop_id) {
-    case PROP_LOCATION:
-      if (!g_value_get_string (value)) {
-        GST_WARNING ("location property cannot be NULL");
-        break;
-      }
-
-      if (openni2src->uri_name != NULL) {
-        g_free (openni2src->uri_name);
-        openni2src->uri_name = NULL;
-      }
-      openni2src->uri_name = g_value_dup_string (value);
-      break;
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-      break;
-  }
-
-  GST_OBJECT_UNLOCK (openni2src);
-}
-
-static void
-gst_openni2_src_get_property (GObject * object, guint prop_id,
-    GValue * value, GParamSpec * pspec)
-{
-  GstOpenni2Src *openni2src = GST_OPENNI2_SRC (object);
-
-  GST_OBJECT_LOCK (openni2src);
-  switch (prop_id) {
-    case PROP_LOCATION:
-      g_value_set_string (value, openni2src->uri_name);
-      break;
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-      break;
-  }
-  GST_OBJECT_UNLOCK (openni2src);
-}
 
 static GstFlowReturn
 gst_openni2src_fill (GstPushSrc * src, GstBuffer * buf)
 {
-  GstFlowReturn ret = GST_FLOW_OK;
-  return ret;
+  GstOpenni2Src *ni2src = GST_OPENNI2_SRC (src);
+  return openni2_read_GstBuffer(ni2src, buf);
 }
 
 gboolean
 gst_openni2src_plugin_init (GstPlugin * plugin)
 {
-  GST_DEBUG_CATEGORY_INIT (openni2src_debug, "openni2src", 0,
-      "OpenNI2 Device Source");
-
   return gst_element_register (plugin, "openni2src", GST_RANK_NONE,
       GST_TYPE_OPENNI2_SRC);
 }
 
 
-
-
-GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src)
+static
+gboolean gst_openni2src_initialise_openni2(GstOpenni2Src *src)
 {
-  /****** OpenNI2 specific stuff *********************************/
+  openni::Status rc = openni::STATUS_OK;
+  rc = openni::OpenNI::initialize();
+  if (rc != openni::STATUS_OK) {
+    GST_ERROR_OBJECT(src, "Initialization failed: %s",
+                     openni::OpenNI::getExtendedError());
+    openni::OpenNI::shutdown();
+    return GST_FLOW_ERROR;
+  }
+  return (rc == openni::STATUS_OK);
+}
+
+GstFlowReturn openni2_initialise_devices(GstOpenni2Src *src)
+{
   openni::Status rc = openni::STATUS_OK;
   const char* deviceURI = openni::ANY_DEVICE;
   if (src->uri_name)
     deviceURI = src->uri_name;
 
-  rc = openni::OpenNI::initialize();
-  if (rc != openni::STATUS_OK) {
-    GST_ERROR_OBJECT(src, "Initialization failed: %s",
-		     openni::OpenNI::getExtendedError());
-    openni::OpenNI::shutdown();
-    return GST_FLOW_ERROR;
-  }
-
+  /** OpenNI2 open device or file **/
   rc = src->device.open(deviceURI);
   if (rc != openni::STATUS_OK) {
     GST_ERROR_OBJECT(src, "Device (%s) open failed: %s", deviceURI,
-		     openni::OpenNI::getExtendedError());
+                     openni::OpenNI::getExtendedError());
     openni::OpenNI::shutdown();
     return GST_FLOW_ERROR;
   }
@@ -383,7 +329,7 @@ GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src)
   }
   else
     GST_WARNING_OBJECT(src, "Couldn't find depth stream: %s", 
-		       openni::OpenNI::getExtendedError());
+                       openni::OpenNI::getExtendedError());
 
   /** color sensor **/
   rc = src->color.create(src->device, openni::SENSOR_COLOR);
@@ -391,22 +337,13 @@ GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src)
     rc = src->color.start();
     if (rc != openni::STATUS_OK) {
       GST_ERROR_OBJECT(src, "Couldn't start color stream: %s ", 
-	     openni::OpenNI::getExtendedError());
+             openni::OpenNI::getExtendedError());
       src->color.destroy();
     }
-
-    /* All this code should go to query_caps */
-    //const openni::SensorInfo* info;
-    //info = &(src->color.getSensorInfo());
-    //const openni::Array<openni::VideoMode>& caps = info->getSupportedVideoModes();
-    //for( int i = 0; i < caps.getSize(); ++i){
-    //  printf("Supported video mode (%dx%d)@%d fps \n", 
-    //	     caps[i].getResolutionX(), caps[i].getResolutionY(), caps[i].getFps());
-    //}
   }
   else
     GST_WARNING_OBJECT(src, "Couldn't find color stream: %s", 
-		       openni::OpenNI::getExtendedError());
+                       openni::OpenNI::getExtendedError());
  
 
   if (!src->depth.isValid() && !src->color.isValid()){
@@ -415,7 +352,7 @@ GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src)
     return GST_FLOW_ERROR;
   }
 
-
+  /** Get resolution and make sure is valid **/
   if (!src->depth.isValid() && !src->color.isValid()){
     src->depthVideoMode = src->depth.getVideoMode();
     src->colorVideoMode = src->color.getVideoMode();
@@ -432,8 +369,8 @@ GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src)
     else {
       GST_ERROR_OBJECT(src, "Error - expect color and depth to be"
         " in same resolution: D: %dx%d vs C: %dx%d",
-	       depthWidth, depthHeight,
-	       colorWidth, colorHeight);
+               depthWidth, depthHeight,
+               colorWidth, colorHeight);
       return GST_FLOW_ERROR;
     }
   }
@@ -457,6 +394,47 @@ GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src)
 }
 
 static
-void gst_openni2src_finalise_devices(GstOpenni2Src *src)
+GstFlowReturn openni2_read_GstBuffer(GstOpenni2Src *src,
+                                     GstBuffer * buf)
 {
+  openni::Status rc = openni::STATUS_OK;
+  openni::VideoStream* pStream = &(ni2src->depth);
+  int changedStreamDummy;
+  rc = openni::OpenNI::waitForAnyStream(&pStream, 1, 
+                                        &changedStreamDummy, 
+                                        SAMPLE_READ_WAIT_TIMEOUT);
+  if (rc != openni::STATUS_OK) {
+    GST_ERROR_OBJECT(src, "Frame read timeout: %s",
+                     openni::OpenNI::getExtendedError());
+    return GST_FLOW_ERROR;
+  }
+
+  rc = ni2src->depth.readFrame(&ni2src->frame);
+  if (rc != openni::STATUS_OK) {
+    GST_ERROR_OBJECT(src, "Frame read error: %s",
+                     openni::OpenNI::getExtendedError());
+    return GST_FLOW_ERROR;
+  }
+
+  /* Now we plug the data from ni2src->frame into buf */
+  GstMapInfo map;
+  gst_buffer_map (buf, &map, GST_MAP_WRITE);
+  /* Is this safe or is a hack? */
+  map.data = (guint8*)ni2src->frame.getData();
+  gst_buffer_unmap (buf, &map);
+  gst_buffer_resize (buf, 0, map.size);
+
+
+  GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]", 
+                      ni2src->frame.getWidth(),
+                      ni2src->frame.getHeight(),
+                      ni2src->frame.getDataSize(),
+                      (long long)ni2src->frame.getTimestamp());
+  return GST_FLOW_OK;
+}
+
+static
+void openni2_finalise(GstOpenni2Src *src)
+{
+  openni::OpenNI::shutdown();
 }
