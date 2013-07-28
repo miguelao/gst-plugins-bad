@@ -52,37 +52,13 @@ struct _GstOpenni2Src
 
   GstOpenni2State state;
   gchar *uri_name;
-  gchar *user_agent;
-  gchar *live_chain_id;
-  gint openni2_version;
-  gint64 content_size;
-  gint64 prev_content_size;
-  gint64 content_size_last;
-  guint64 bytes_read;
-  gint64 read_offset;
-  gboolean eos;
-  gboolean do_start;
-  gboolean unique_setup;
-  gboolean live_tv;
-  gboolean enable_timing_position;
-  gint live_tv_id;
-  gchar *channel_name;
-  guint mode;
 
-  /*
-   * Openni2 capabilities 
-   */
-  GstCaps *openni2_caps;
-  gboolean update_prog_chain;
-
-  /*
-   * stablish a maximum iteration value to the IS_RECORDING message 
-   */
-  guint wait_to_transfer;
-
-  /* OpenNI2 needed variables */
+  /* OpenNI2 variables */
   openni::Device device;
   openni::VideoStream depth, color;
+  openni::VideoMode depthVideoMode, colorVideoMode;
+  int width, height;
+
 };
 
 struct _GstOpenni2SrcClass
