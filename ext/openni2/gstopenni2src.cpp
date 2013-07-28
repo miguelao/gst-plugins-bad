@@ -64,64 +64,57 @@ enum
   PROP_LOCATION,
 };
 
-static void gst_openni2_src_clear (GstOpenni2Src * openni2_src);
+G_DEFINE_TYPE (GstOpenni2Src, gst_openni2_src, GST_TYPE_PUSH_SRC)
 
+static void gst_openni2_src_dispose (GObject * object);
 static void gst_openni2_src_finalize (GObject * gobject);
 
-static GstFlowReturn gst_openni2_src_create (GstPushSrc * psrc,
-    GstBuffer ** outbuf);
-
+/* basesrc methods */
 static gboolean gst_openni2_src_start (GstBaseSrc * bsrc);
 static gboolean gst_openni2_src_stop (GstBaseSrc * bsrc);
 static gboolean gst_openni2_src_get_size (GstBaseSrc * bsrc, guint64 * size);
-static gboolean gst_openni2_src_is_seekable (GstBaseSrc * push_src);
-
-static GstStateChangeReturn
-gst_openni2_src_change_state (GstElement * element, GstStateChange transition);
-
 static void gst_openni2_src_set_property (GObject * object,
     guint prop_id, const GValue * value, GParamSpec * pspec);
 static void gst_openni2_src_get_property (GObject * object,
     guint prop_id, GValue * value, GParamSpec * pspec);
 
-#if 0
-static gboolean gst_openni2_src_handle_query (GstPad * pad, GstQuery * query);
-static gboolean gst_openni2_src_handle_event (GstPad * pad, GstEvent * event);
-#endif
+/* element methods */
+static GstStateChangeReturn
+gst_openni2_src_change_state (GstElement * element, GstStateChange transition);
 
+/* pushsrc method */
+static GstFlowReturn gst_openni2src_fill (GstPushSrc * src, GstBuffer * buf);
+
+/* OpenNI2 interaction methods */
 static GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src);
-
-G_DEFINE_TYPE (GstOpenni2Src, gst_openni2_src, GST_TYPE_PUSH_SRC)
+static void gst_openni2src_finalise_devices(GstOpenni2Src *src);
 
 static void gst_openni2_src_class_init (GstOpenni2SrcClass * klass)
 {
   GObjectClass *gobject_class;
-  GstPushSrcClass *gstpushsrc_class;
-  GstBaseSrcClass *gstbasesrc_class;
+  GstPushSrcClass *pushsrc_class;
+  GstBaseSrcClass *basesrc_class;
   GstElementClass *element_class = GST_ELEMENT_CLASS (klass);
 
   gobject_class = (GObjectClass *) klass;
-  gstbasesrc_class = (GstBaseSrcClass *) klass;
-  gstpushsrc_class = (GstPushSrcClass *) klass;
+  basesrc_class = (GstBaseSrcClass *) klass;
+  pushsrc_class = (GstPushSrcClass *) klass;
+  parent_class = (GstElementClass *) g_type_class_peek_parent (klass);
 
+  gobject_class->dispose = gst_openni2_src_dispose;
+  gobject_class->finalize = gst_openni2_src_finalize;
   gobject_class->set_property = gst_openni2_src_set_property;
   gobject_class->get_property = gst_openni2_src_get_property;
-  gobject_class->finalize = gst_openni2_src_finalize;
-
   g_object_class_install_property
       (gobject_class, PROP_LOCATION,
       g_param_spec_string ("location", "Location",
-          "The location, can be a file or a device.",
+          "Source uri, can be a file or a device.",
           "", (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  parent_class = (GstElementClass *) g_type_class_peek_parent (klass);
 
-  gstbasesrc_class->start = GST_DEBUG_FUNCPTR (gst_openni2_src_start);
-  gstbasesrc_class->stop = GST_DEBUG_FUNCPTR (gst_openni2_src_stop);
-  gstbasesrc_class->get_size = GST_DEBUG_FUNCPTR (gst_openni2_src_get_size);
-  gstbasesrc_class->is_seekable =
-      GST_DEBUG_FUNCPTR (gst_openni2_src_is_seekable);
-  gstpushsrc_class->create = GST_DEBUG_FUNCPTR (gst_openni2_src_create);
+  basesrc_class->start = GST_DEBUG_FUNCPTR (gst_openni2_src_start);
+  basesrc_class->stop = GST_DEBUG_FUNCPTR (gst_openni2_src_stop);
+  basesrc_class->get_size = GST_DEBUG_FUNCPTR (gst_openni2_src_get_size);
 
   gst_element_class_add_pad_template (element_class,
       gst_static_pad_template_get (&srctemplate));
@@ -132,28 +125,23 @@ static void gst_openni2_src_class_init (GstOpenni2SrcClass * klass)
       "Miguel Casas-Sanchez <miguelecasassanchez@gmail.com>");
 
   element_class->change_state = gst_openni2_src_change_state;
+
+  pushsrc_class->fill = GST_DEBUG_FUNCPTR (gst_openni2src_fill);
 }
 
 static void
 gst_openni2_src_init (GstOpenni2Src * ni2src)
 {
   gst_base_src_set_format (GST_BASE_SRC (ni2src), GST_FORMAT_BYTES);
-#if 0
-  gst_pad_set_event_function (GST_BASE_SRC_PAD (GST_BASE_SRC (ni2src)),
-      gst_openni2_src_handle_event);
-#endif
-#if 0
-  gst_pad_set_query_function (GST_BASE_SRC_PAD (GST_BASE_SRC (ni2src)),
-      gst_openni2_src_handle_query);
-#endif
 
+  /* OpenNI2 initialisation inside this function */
+  gst_openni2src_initialise_devices(ni2src);
 }
 
 static void
-gst_openni2_src_clear (GstOpenni2Src * openni2_src)
+gst_openni2_src_dispose (GObject* object)
 {
-  openni2_src->unique_setup = FALSE;
-
+  G_OBJECT_CLASS (parent_class)->dispose (object);
 }
 
 static void
@@ -161,31 +149,15 @@ gst_openni2_src_finalize (GObject * gobject)
 {
   GstOpenni2Src *ni2src = GST_OPENNI2_SRC (gobject);
 
-  gst_openni2_src_clear (ni2src);
+  gst_openni2src_finalise_devices (ni2src);
 
   if (ni2src->uri_name) {
     g_free (ni2src->uri_name);
     ni2src->uri_name = NULL;
   }
 
-  if (ni2src->user_agent) {
-    g_free (ni2src->user_agent);
-    ni2src->user_agent = NULL;
-  }
 
   G_OBJECT_CLASS (parent_class)->finalize (gobject);
-}
-
-static GstFlowReturn
-gst_openni2_src_create (GstPushSrc * psrc, GstBuffer ** outbuf)
-{
-  GstOpenni2Src *src = GST_OPENNI2_SRC (psrc);
-
-  gssize size = 128;            // hack!!
-  (*outbuf) = gst_buffer_new_allocate (NULL, size, NULL);
-
-  /* OpenNI2 initialisation inside this function */
-  return gst_openni2src_initialise_devices(src);
 }
 
 
@@ -202,8 +174,6 @@ gst_openni2_src_start (GstBaseSrc * bsrc)
 
   msg = gst_message_new_duration_changed (GST_OBJECT (src));
   gst_element_post_message (GST_ELEMENT (src), msg);
-
-  src->do_start = FALSE;
 
   gst_element_post_message (GST_ELEMENT (src),
       gst_message_new_duration_changed (GST_OBJECT (src)));
@@ -238,7 +208,7 @@ gst_openni2_src_stop (GstBaseSrc * bsrc)
 {
   GstOpenni2Src *src = GST_OPENNI2_SRC (bsrc);
 
-  gst_openni2_src_clear (src);
+  gst_openni2src_finalise_devices (src);
   return TRUE;
 }
 
@@ -271,54 +241,7 @@ gst_openni2_src_handle_event (GstPad * pad, GstEvent * event)
   return ret;
 }
 #endif
-static gboolean
-gst_openni2_src_is_seekable (GstBaseSrc * push_src)
-{
-  return FALSE;
-}
 
-#if 0
-static gboolean
-gst_openni2_src_handle_query (GstPad * pad, GstQuery * query)
-{
-  gboolean res = FALSE;
-  GstOpenni2Src *myth = GST_OPENNI2_SRC (gst_pad_get_parent (pad));
-  GstFormat formt;
-
-
-  switch (GST_QUERY_TYPE (query)) {
-    case GST_QUERY_POSITION:
-      gst_query_parse_position (query, &formt, NULL);
-      if (formt == GST_FORMAT_BYTES) {
-        gst_query_set_position (query, formt, myth->read_offset);
-        GST_DEBUG_OBJECT (myth, "POS %" G_GINT64_FORMAT, myth->read_offset);
-        res = TRUE;
-      } else if (formt == GST_FORMAT_TIME) {
-        res = gst_pad_query_default (pad, query);
-      }
-      break;
-    case GST_QUERY_DURATION:
-      gst_query_parse_duration (query, &formt, NULL);
-      if (formt == GST_FORMAT_BYTES) {
-        gint64 size = myth->content_size;
-
-        gst_query_set_duration (query, GST_FORMAT_BYTES, 10);
-        GST_DEBUG_OBJECT (myth, "SIZE %" G_GINT64_FORMAT, size);
-        res = TRUE;
-      } else if (formt == GST_FORMAT_TIME) {
-        res = gst_pad_query_default (pad, query);
-      }
-      break;
-    default:
-      res = gst_pad_query_default (pad, query);
-      break;
-  }
-
-  gst_object_unref (myth);
-
-  return res;
-}
-#endif
 static GstStateChangeReturn
 gst_openni2_src_change_state (GstElement * element, GstStateChange transition)
 {
@@ -347,7 +270,7 @@ gst_openni2_src_change_state (GstElement * element, GstStateChange transition)
 
   switch (transition) {
     case GST_STATE_CHANGE_READY_TO_NULL:
-      gst_openni2_src_clear (src);
+      gst_openni2src_finalise_devices (src);
       break;
     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
     case GST_STATE_CHANGE_PAUSED_TO_READY:
@@ -403,6 +326,13 @@ gst_openni2_src_get_property (GObject * object, guint prop_id,
       break;
   }
   GST_OBJECT_UNLOCK (openni2src);
+}
+
+static GstFlowReturn
+gst_openni2src_fill (GstPushSrc * src, GstBuffer * buf)
+{
+  GstFlowReturn ret = GST_FLOW_OK;
+  return ret;
 }
 
 gboolean
@@ -524,4 +454,9 @@ GstFlowReturn gst_openni2src_initialise_devices(GstOpenni2Src *src)
   GST_WARNING_OBJECT(src, "resolution: %dx%d", src->width, src->height);
   
   return GST_FLOW_OK;
+}
+
+static
+void gst_openni2src_finalise_devices(GstOpenni2Src *src)
+{
 }
