@@ -58,6 +58,7 @@ struct _GstOpenni2Src
   openni::VideoStream depth, color;
   openni::VideoMode depthVideoMode, colorVideoMode;
   int width, height;
+  openni::VideoFrameRef frame;
 
 };
 
