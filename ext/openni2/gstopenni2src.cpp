@@ -56,7 +56,7 @@ static GstStaticPadTemplate srctemplate = GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS ("video/x-raw, "                               
-		     "format = (string) RGBA, "
+		     "format = (string) {RGBA, RGB, GRAY16_LE} "
 		     "framerate = (fraction) [0/1, MAX], "
 		     "width = (int) [ 1, MAX ], " 
 		     "height = (int) [ 1, MAX ]")
@@ -73,7 +73,8 @@ enum
 typedef enum
 {
   SOURCETYPE_DEPTH,
-  SOURCETYPE_COLOR
+  SOURCETYPE_COLOR,
+  SOURCETYPE_BOTH
 } GstOpenni2SourceType;
 #define DEFAULT_SOURCETYPE  SOURCETYPE_DEPTH
 
@@ -88,6 +89,7 @@ gst_openni2_src_sourcetype_get_type (void)
     static const GEnumValue values[] = {
       {SOURCETYPE_DEPTH, "Get depth readings", "depth"},
       {SOURCETYPE_COLOR, "Get color readings", "color"},
+      {SOURCETYPE_BOTH, "Get color and depth (as alpha) readings", "both"},
       {0, NULL, NULL},
     };
     etype = g_enum_register_static ("GstOpenni2SrcSourcetype", values);
@@ -318,9 +320,18 @@ gst_openni2_src_get_caps (GstBaseSrc * src, GstCaps * filter)
     return gst_caps_new_empty();
   }
 
-  if (ni2src->depth.isValid () && ni2src->sourcetype == SOURCETYPE_DEPTH){
+  if (ni2src->depth.isValid () && ni2src->color.isValid () && 
+      ni2src->sourcetype == SOURCETYPE_BOTH){
     ret = gst_caps_new_simple ("video/x-raw",
-			       "format", G_TYPE_STRING, "GRAY16_BE",
+			       "format", G_TYPE_STRING, "RGBA",
+			       "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
+			       "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+			       "width", G_TYPE_INT, ni2src->width,
+			       "height", G_TYPE_INT, ni2src->height,
+			       NULL);
+  } else if (ni2src->depth.isValid () && ni2src->sourcetype == SOURCETYPE_DEPTH){
+    ret = gst_caps_new_simple ("video/x-raw",
+			       "format", G_TYPE_STRING, "GRAY16_LE",
 			       "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
 			       "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
 			       "width", G_TYPE_INT, ni2src->width,
@@ -526,14 +537,39 @@ openni2_read_GstBuffer (GstOpenni2Src * src, GstBuffer * buf)
   GstMapInfo map;
   gst_buffer_map (buf, &map, GST_MAP_WRITE);
 
-  if (src->depth.isValid () && src->sourcetype == SOURCETYPE_DEPTH) {
+  if (src->depth.isValid () && src->color.isValid () && 
+      src->sourcetype == SOURCETYPE_BOTH) {
     rc = src->depth.readFrame (&src->depthFrame);
     if (rc != openni::STATUS_OK) {
       GST_ERROR_OBJECT (src, "Frame read error: %s",
 			openni::OpenNI::getExtendedError ());
       return GST_FLOW_ERROR;
     }
-    memcpy(map.data, src->depthFrame.getData (), src->depthFrame.getDataSize());
+    rc = src->color.readFrame (&src->colorFrame);
+    if (rc != openni::STATUS_OK) {
+      GST_ERROR_OBJECT (src, "Frame read error: %s",
+			openni::OpenNI::getExtendedError ());
+      return GST_FLOW_ERROR;
+    }
+    memcpy(map.data, src->colorFrame.getData (), src->colorFrame.getDataSize());
+    /* Add depth as 8bit alpha channel, depth is 16bit samples */
+    guint8* pData = map.data + src->colorFrame.getDataSize();
+    guint16* pDepth = (guint16*) src->depthFrame.getData();
+    for( int i=0; i < src->depthFrame.getDataSize()/2; ++i)
+      pData[i] = pDepth[i] >> 8;
+    GST_WARNING_OBJECT (src, "sending buffer (%d+%d)B [%08llu]",
+			src->colorFrame.getDataSize(),
+			src->depthFrame.getDataSize (), 
+			(long long) src->depthFrame.getTimestamp ());
+
+  } else if (src->depth.isValid () && src->sourcetype == SOURCETYPE_DEPTH) {
+    rc = src->depth.readFrame (&src->depthFrame);
+    if (rc != openni::STATUS_OK) {
+      GST_ERROR_OBJECT (src, "Frame read error: %s",
+			openni::OpenNI::getExtendedError ());
+      return GST_FLOW_ERROR;
+    }
+    memcpy(map.data, src->depthFrame.getData(), src->depthFrame.getDataSize());
     GST_BUFFER_PTS(buf) = src->depthFrame.getTimestamp() * 1000;
     GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
 			src->depthFrame.getWidth (),
@@ -547,7 +583,7 @@ openni2_read_GstBuffer (GstOpenni2Src * src, GstBuffer * buf)
 			openni::OpenNI::getExtendedError ());
       return GST_FLOW_ERROR;
     }
-    memcpy(map.data, src->colorFrame.getData (), src->colorFrame.getDataSize());
+    memcpy(map.data, src->colorFrame.getData(), src->colorFrame.getDataSize());
     GST_BUFFER_PTS(buf) = src->colorFrame.getTimestamp() * 1000;
     GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
 			src->colorFrame.getWidth (),
