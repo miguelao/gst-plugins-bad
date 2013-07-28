@@ -54,11 +54,12 @@ struct _GstOpenni2Src
   gchar *uri_name;
 
   /* OpenNI2 variables */
-    openni::Device device;
-    openni::VideoStream depth, color;
-    openni::VideoMode depthVideoMode, colorVideoMode;
-  int width, height;
-    openni::VideoFrameRef frame;
+  openni::Device device;
+  openni::VideoStream depth, color;
+  openni::VideoMode depthVideoMode, colorVideoMode;
+  openni::PixelFormat depthpixfmt, colorpixfmt;
+  int width, height, fps;
+  openni::VideoFrameRef depthFrame, colorFrame;
 
 };
 
