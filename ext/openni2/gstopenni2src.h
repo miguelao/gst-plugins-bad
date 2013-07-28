@@ -52,6 +52,7 @@ struct _GstOpenni2Src
 
   GstOpenni2State state;
   gchar *uri_name;
+  gint sourcetype;
 
   /* OpenNI2 variables */
   openni::Device device;
