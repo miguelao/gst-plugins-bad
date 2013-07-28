@@ -36,7 +36,10 @@
  * </programlisting>
  *
  * <programlisting>
-  LD_LIBRARY_PATH=/usr/lib/OpenNI2/Drivers/ GST_DEBUG=2 gst-launch-1.0 --gst-debug=openni2src:5   openni2src location='~/Downloads/mr.oni' ! fakesink
+  LD_LIBRARY_PATH=/usr/lib/OpenNI2/Drivers/ gst-launch-1.0 --gst-debug=openni2src:5   openni2src location='~/Downloads/mr.oni' sourcetype=depth ! videoconvert ! ximagesink
+ * </programlisting>
+ * <programlisting>
+  LD_LIBRARY_PATH=/usr/lib/OpenNI2/Drivers/ gst-launch-1.0 --gst-debug=openni2src:5   openni2src location='~/Downloads/mr.oni' sourcetype=color ! videoconvert ! ximagesink
  * </programlisting>
  * </para>
  * </refsect2>
@@ -58,7 +61,6 @@ static GstStaticPadTemplate srctemplate = GST_STATIC_PAD_TEMPLATE ("src",
 		     "width = (int) [ 1, MAX ], " 
 		     "height = (int) [ 1, MAX ]")
     );
-//GST_STATIC_CAPS_ANY);
 
 static GstElementClass *parent_class = NULL;
 
@@ -66,9 +68,32 @@ enum
 {
   PROP_0,
   PROP_LOCATION,
+  PROP_SOURCETYPE
 };
+typedef enum
+{
+  SOURCETYPE_DEPTH,
+  SOURCETYPE_COLOR
+} GstOpenni2SourceType;
+#define DEFAULT_SOURCETYPE  SOURCETYPE_DEPTH
 
 #define SAMPLE_READ_WAIT_TIMEOUT 2000   //2000ms
+
+#define GST_TYPE_OPENNI2_SRC_SOURCETYPE (gst_openni2_src_sourcetype_get_type ())
+static GType
+gst_openni2_src_sourcetype_get_type (void)
+{
+  static GType etype = 0;
+  if (etype == 0) {
+    static const GEnumValue values[] = {
+      {SOURCETYPE_DEPTH, "Get depth readings", "depth"},
+      {SOURCETYPE_COLOR, "Get color readings", "color"},
+      {0, NULL, NULL},
+    };
+    etype = g_enum_register_static ("GstOpenni2SrcSourcetype", values);
+  }
+  return etype;
+}
 
 /* GObject methods */
 static void gst_openni2_src_dispose (GObject * object);
@@ -124,6 +149,12 @@ gst_openni2_src_class_init (GstOpenni2SrcClass * klass)
 			   "Source uri, can be a file or a device.", "",
 			   (GParamFlags) 
 			   (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+  g_object_class_install_property (gobject_class, PROP_SOURCETYPE,
+      g_param_spec_enum ("sourcetype",
+          "Device source type",
+          "Type of readings to get from the source",
+          GST_TYPE_OPENNI2_SRC_SOURCETYPE, DEFAULT_SOURCETYPE,
+          (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
 
   basesrc_class->start = GST_DEBUG_FUNCPTR (gst_openni2_src_start);
@@ -199,6 +230,9 @@ gst_openni2_src_set_property (GObject * object, guint prop_id,
       /* Action! */
       openni2_initialise_devices (openni2src);
       break;
+    case PROP_SOURCETYPE:
+      openni2src->sourcetype = g_value_get_enum (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -217,6 +251,9 @@ gst_openni2_src_get_property (GObject * object, guint prop_id,
   switch (prop_id) {
     case PROP_LOCATION:
       g_value_set_string (value, openni2src->uri_name);
+      break;
+    case PROP_SOURCETYPE:
+      g_value_set_enum (value, openni2src->sourcetype);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -281,13 +318,23 @@ gst_openni2_src_get_caps (GstBaseSrc * src, GstCaps * filter)
     return gst_caps_new_empty();
   }
 
-  ret = gst_caps_new_simple ("video/x-raw",
-			     "format", G_TYPE_STRING, "RGB",
-			     "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
-			     "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
-			     "width", G_TYPE_INT, ni2src->width,
-			     "height", G_TYPE_INT, ni2src->height,
-			     NULL);
+  if (ni2src->depth.isValid () && ni2src->sourcetype == SOURCETYPE_DEPTH){
+    ret = gst_caps_new_simple ("video/x-raw",
+			       "format", G_TYPE_STRING, "GRAY16_BE",
+			       "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
+			       "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+			       "width", G_TYPE_INT, ni2src->width,
+			       "height", G_TYPE_INT, ni2src->height,
+			       NULL);
+  } else if (ni2src->color.isValid () && ni2src->sourcetype == SOURCETYPE_COLOR){
+    ret = gst_caps_new_simple ("video/x-raw",
+			       "format", G_TYPE_STRING, "RGB",
+			       "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
+			       "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+			       "width", G_TYPE_INT, ni2src->width,
+			       "height", G_TYPE_INT, ni2src->height,
+			       NULL);
+  }
   //ni2src->probed_caps = gst_caps_ref (ret);
   GST_WARNING_OBJECT (ni2src, "probed caps: %" GST_PTR_FORMAT, ret);
   return ret;
@@ -464,23 +511,13 @@ openni2_read_GstBuffer (GstOpenni2Src * src, GstBuffer * buf)
   openni::Status rc = openni::STATUS_OK;
   openni::VideoStream * pStream = &(src->depth);
   int changedStreamDummy;
+
+  /* Block until we get some data */
   rc = openni::OpenNI::waitForAnyStream (&pStream, 1,
-      &changedStreamDummy, SAMPLE_READ_WAIT_TIMEOUT);
+					 &changedStreamDummy, 
+					 SAMPLE_READ_WAIT_TIMEOUT);
   if (rc != openni::STATUS_OK) {
     GST_ERROR_OBJECT (src, "Frame read timeout: %s",
-        openni::OpenNI::getExtendedError ());
-    return GST_FLOW_ERROR;
-  }
-
-  rc = src->color.readFrame (&src->colorFrame);
-  if (rc != openni::STATUS_OK) {
-    GST_ERROR_OBJECT (src, "Frame read error: %s",
-        openni::OpenNI::getExtendedError ());
-    return GST_FLOW_ERROR;
-  }
-  rc = src->depth.readFrame (&src->depthFrame);
-  if (rc != openni::STATUS_OK) {
-    GST_ERROR_OBJECT (src, "Frame read error: %s",
         openni::OpenNI::getExtendedError ());
     return GST_FLOW_ERROR;
   }
@@ -488,18 +525,41 @@ openni2_read_GstBuffer (GstOpenni2Src * src, GstBuffer * buf)
   /* Now we plug the data from ni2src->frame into buf */
   GstMapInfo map;
   gst_buffer_map (buf, &map, GST_MAP_WRITE);
+
+  if (src->depth.isValid () && src->sourcetype == SOURCETYPE_DEPTH) {
+    rc = src->depth.readFrame (&src->depthFrame);
+    if (rc != openni::STATUS_OK) {
+      GST_ERROR_OBJECT (src, "Frame read error: %s",
+			openni::OpenNI::getExtendedError ());
+      return GST_FLOW_ERROR;
+    }
+    memcpy(map.data, src->depthFrame.getData (), src->depthFrame.getDataSize());
+    GST_BUFFER_PTS(buf) = src->depthFrame.getTimestamp() * 1000;
+    GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
+			src->depthFrame.getWidth (),
+			src->depthFrame.getHeight (),
+			src->depthFrame.getDataSize (), 
+			(long long) src->depthFrame.getTimestamp ());
+  } else if (src->color.isValid () && src->sourcetype == SOURCETYPE_COLOR) {
+    rc = src->color.readFrame (&src->colorFrame);
+    if (rc != openni::STATUS_OK) {
+      GST_ERROR_OBJECT (src, "Frame read error: %s",
+			openni::OpenNI::getExtendedError ());
+      return GST_FLOW_ERROR;
+    }
+    memcpy(map.data, src->colorFrame.getData (), src->colorFrame.getDataSize());
+    GST_BUFFER_PTS(buf) = src->colorFrame.getTimestamp() * 1000;
+    GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
+			src->colorFrame.getWidth (),
+			src->colorFrame.getHeight (),
+			src->colorFrame.getDataSize (), 
+			(long long) src->colorFrame.getTimestamp ());
+  }
+
   /* Is this safe or is a hack? */
-  memcpy(map.data, src->colorFrame.getData (), src->colorFrame.getDataSize());
-  GST_BUFFER_PTS(buf) = src->colorFrame.getTimestamp() * 1000;
   gst_buffer_unmap (buf, &map);
   gst_buffer_resize (buf, 0, map.size);
 
-
-  GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
-      src->colorFrame.getWidth (),
-      src->colorFrame.getHeight (),
-      src->colorFrame.getDataSize (), 
-      (long long) src->colorFrame.getTimestamp ());
   return GST_FLOW_OK;
 }
 
