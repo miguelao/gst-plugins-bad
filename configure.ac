@@ -3,12 +3,12 @@ AC_PREREQ([2.68])
 dnl initialize autoconf
 dnl when going to/from release please set the nano (fourth number) right !
 dnl releases only do Wall, cvs and prerelease does Werror too
-AC_INIT([GStreamer Bad Plug-ins],[1.1.2.1],[http://bugzilla.gnome.org/enter_bug.cgi?product=GStreamer],[gst-plugins-bad])
+AC_INIT([GStreamer Bad Plug-ins],[1.1.3.1],[http://bugzilla.gnome.org/enter_bug.cgi?product=GStreamer],[gst-plugins-bad])
 
 AG_GST_INIT
 
 dnl initialize automake
-AM_INIT_AUTOMAKE([-Wno-portability 1.11 no-dist-gzip dist-xz tar-ustar])
+AM_INIT_AUTOMAKE([-Wno-portability 1.11 no-dist-gzip dist-xz tar-ustar subdir-objects])
 
 dnl define PACKAGE_VERSION_* variables
 AS_VERSION
@@ -48,11 +48,11 @@ dnl - interfaces added/removed/changed -> increment CURRENT, REVISION = 0
 dnl - interfaces added -> increment AGE
 dnl - interfaces removed -> AGE = 0
 dnl sets GST_LT_LDFLAGS
-AS_LIBTOOL(GST, 102, 0, 102)
+AS_LIBTOOL(GST, 103, 0, 103)
 
 dnl *** required versions of GStreamer stuff ***
-GST_REQ=1.1.2.1
-GSTPB_REQ=1.1.2.1
+GST_REQ=1.1.3.1
+GSTPB_REQ=1.1.3.1
 
 dnl *** autotools stuff ****
 
@@ -1110,40 +1110,6 @@ AG_GST_CHECK_FEATURE(CDAUDIO, [cdaudio], cdaudio, [
   AC_SUBST(CDAUDIO_LIBS)
 ])
 
-dnl *** celt ***
-translit(dnm, m, l) AM_CONDITIONAL(USE_CELT, true)
-AG_GST_CHECK_FEATURE(CELT, [celt], celt, [
-  PKG_CHECK_MODULES(CELT, celt >= 0.5.0, [
-          AC_DEFINE([HAVE_CELT], 1, [Define if libcelt 0.5 is installed])
-          HAVE_CELT="yes"
-  ], [
-          HAVE_CELT="no"
-  ])
-
-  PKG_CHECK_MODULES(CELT_0_7, celt >= 0.7.0, [
-          AC_DEFINE([HAVE_CELT_0_7], 1, [Define if libcelt 0.7 is installed])
-  ], [
-          dnl to prevent an error
-          true
-  ])
-
-  PKG_CHECK_MODULES(CELT_0_8, celt >= 0.8.0, [
-          AC_DEFINE([HAVE_CELT_0_8], 1, [Define if libcelt 0.8 is installed])
-  ], [
-          dnl to prevent an error
-          true
-  ])
-
-  PKG_CHECK_MODULES(CELT_0_11, celt >= 0.11.0, [
-          AC_DEFINE([HAVE_CELT_0_11], 1, [Define if libcelt 0.11 is installed])
-  ], [
-          dnl to prevent an error
-          true
-  ])
-  AC_SUBST(CELT_CFLAGS)
-  AC_SUBST(CELT_LIBS)
-])
-
 dnl *** chromaprint ***
 translit(dnm, m, l) AM_CONDITIONAL(USE_CHROMAPRINT, true)
 AG_GST_CHECK_FEATURE(CHROMAPRINT, [chromaprint], chromaprint, [
@@ -1722,7 +1688,7 @@ AG_GST_CHECK_FEATURE(NAS, [nas plug-in], nassink, [
 dnl *** neon ***
 translit(dnm, m, l) AM_CONDITIONAL(USE_NEON, true)
 AG_GST_CHECK_FEATURE(NEON, [neon http client plugins], neonhttpsrc, [
-  PKG_CHECK_MODULES(NEON, neon >= 0.27.0  neon <= 0.29.99, HAVE_NEON="yes", [
+  PKG_CHECK_MODULES(NEON, neon >= 0.27.0  neon <= 0.30.99, HAVE_NEON="yes", [
     HAVE_NEON="no"
   ])
   AC_SUBST(NEON_CFLAGS)
@@ -2211,7 +2177,6 @@ AM_CONDITIONAL(USE_VOAACENC, false)
 AM_CONDITIONAL(USE_APEXSINK, false)
 AM_CONDITIONAL(USE_BZ2, false)
 AM_CONDITIONAL(USE_CDAUDIO, false)
-AM_CONDITIONAL(USE_CELT, false)
 AM_CONDITIONAL(USE_CHROMAPRINT, false)
 AM_CONDITIONAL(USE_CURL, false)
 AM_CONDITIONAL(USE_DASH, false)
@@ -2350,6 +2315,8 @@ AC_SUBST(GST_PLUGIN_LDFLAGS)
 
 dnl *** output files ***
 
+$MKDIR_P tests/check/orc
+
 dnl po/Makefile.in
 
 AC_CONFIG_FILES(
@@ -2481,7 +2448,6 @@ ext/assrender/Makefile
 ext/apexsink/Makefile
 ext/bz2/Makefile
 ext/cdaudio/Makefile
-ext/celt/Makefile
 ext/chromaprint/Makefile
 ext/curl/Makefile
 ext/dash/Makefile

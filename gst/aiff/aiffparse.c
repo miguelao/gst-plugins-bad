@@ -575,8 +575,7 @@ gst_aiff_parse_calculate_duration (GstAiffParse * aiff)
 }
 
 static void
-gst_aiff_parse_ignore_chunk (GstAiffParse * aiff, GstBuffer * buf, guint32 tag,
-    guint32 size)
+gst_aiff_parse_ignore_chunk (GstAiffParse * aiff, guint32 tag, guint32 size)
 {
   guint flush;
 
@@ -590,8 +589,6 @@ gst_aiff_parse_ignore_chunk (GstAiffParse * aiff, GstBuffer * buf, guint32 tag,
   aiff->offset += flush;
   if (aiff->streaming) {
     gst_adapter_flush (aiff->adapter, flush);
-  } else {
-    gst_buffer_unref (buf);
   }
 }
 
@@ -708,7 +705,7 @@ gst_aiff_parse_read_chunk (GstAiffParse * aiff, guint64 * offset, guint32 * tag,
 {
   guint size;
   GstFlowReturn res;
-  GstBuffer *buf;
+  GstBuffer *buf = NULL;
   GstMapInfo info;
 
   if ((res =
@@ -720,6 +717,7 @@ gst_aiff_parse_read_chunk (GstAiffParse * aiff, guint64 * offset, guint32 * tag,
   size = GST_READ_UINT32_BE (info.data + 4);
   gst_buffer_unmap (buf, &info);
   gst_buffer_unref (buf);
+  buf = NULL;
 
   if ((res =
           gst_pad_pull_range (aiff->sinkpad, (*offset) + 8, size,
@@ -784,6 +782,7 @@ gst_aiff_parse_create_caps (GstAiffParse * aiff)
     caps = gst_caps_new_simple ("audio/x-raw",
         "format", G_TYPE_STRING, format,
         "channels", G_TYPE_INT, aiff->channels,
+        "layout", G_TYPE_STRING, "interleaved",
         "rate", G_TYPE_INT, aiff->rate, NULL);
   }
 
@@ -796,7 +795,7 @@ static GstFlowReturn
 gst_aiff_parse_stream_headers (GstAiffParse * aiff)
 {
   GstFlowReturn res;
-  GstBuffer *buf;
+  GstBuffer *buf = NULL;
   guint32 tag, size;
   gboolean gotdata = FALSE;
   gboolean done = FALSE;
@@ -823,6 +822,8 @@ gst_aiff_parse_stream_headers (GstAiffParse * aiff)
       tag = GST_READ_UINT32_LE (info.data);
       size = GST_READ_UINT32_BE (info.data + 4);
       gst_buffer_unmap (buf, &info);
+      gst_buffer_unref (buf);
+      buf = NULL;
     }
 
     GST_INFO_OBJECT (aiff,
@@ -834,6 +835,8 @@ gst_aiff_parse_stream_headers (GstAiffParse * aiff)
     switch (tag) {
       case GST_MAKE_FOURCC ('C', 'O', 'M', 'M'):{
         GstCaps *caps;
+        GstEvent *event;
+        gchar *stream_id;
 
         if (aiff->streaming) {
           if (!gst_aiff_parse_peek_chunk (aiff, &tag, &size))
@@ -857,6 +860,14 @@ gst_aiff_parse_stream_headers (GstAiffParse * aiff)
           goto no_channels;
         if (aiff->rate == 0)
           goto no_rate;
+
+        stream_id =
+            gst_pad_create_stream_id (aiff->srcpad, GST_ELEMENT_CAST (aiff),
+            NULL);
+        event = gst_event_new_stream_start (stream_id);
+        gst_event_set_group_id (event, gst_util_group_id_next ());
+        gst_pad_push_event (aiff->srcpad, event);
+        g_free (stream_id);
 
         GST_DEBUG_OBJECT (aiff, "creating the caps");
 
@@ -896,7 +907,6 @@ gst_aiff_parse_stream_headers (GstAiffParse * aiff)
           GstBuffer *ssndbuf = NULL;
           GstMapInfo info;
 
-          gst_buffer_unref (buf);
           if ((res =
                   gst_pad_pull_range (aiff->sinkpad, aiff->offset, 16,
                       &ssndbuf)) != GST_FLOW_OK)
@@ -913,7 +923,7 @@ gst_aiff_parse_stream_headers (GstAiffParse * aiff)
 
         /* 8 byte chunk header, 8 byte SSND header */
         aiff->offset += 16;
-        datasize = size - 16;
+        datasize = size - 8;
 
         aiff->datastart = aiff->offset + aiff->ssnd_offset;
         /* file might be truncated */
@@ -968,8 +978,10 @@ gst_aiff_parse_stream_headers (GstAiffParse * aiff)
         break;
       }
       default:
-        gst_aiff_parse_ignore_chunk (aiff, buf, tag, size);
+        gst_aiff_parse_ignore_chunk (aiff, tag, size);
     }
+
+    buf = NULL;
 
     if (upstream_size && (aiff->offset >= upstream_size)) {
       /* Now we have gone through the whole file */
@@ -1494,19 +1506,18 @@ done:
 static gboolean
 gst_aiff_parse_pad_query (GstPad * pad, GstObject * parent, GstQuery * query)
 {
-  gboolean res = TRUE;
+  gboolean res = FALSE;
   GstAiffParse *aiff = GST_AIFF_PARSE (parent);
-
-  /* only if we know */
-  if (aiff->state != AIFF_PARSE_DATA) {
-    return FALSE;
-  }
 
   switch (GST_QUERY_TYPE (query)) {
     case GST_QUERY_DURATION:
     {
       gint64 duration = 0;
       GstFormat format;
+
+      /* only if we know */
+      if (aiff->state != AIFF_PARSE_DATA)
+        break;
 
       gst_query_parse_duration (query, &format, NULL);
 
@@ -1530,6 +1541,10 @@ gst_aiff_parse_pad_query (GstPad * pad, GstObject * parent, GstQuery * query)
       gint64 srcvalue, dstvalue;
       GstFormat srcformat, dstformat;
 
+      /* only if we know */
+      if (aiff->state != AIFF_PARSE_DATA)
+        break;
+
       gst_query_parse_convert (query, &srcformat, &srcvalue,
           &dstformat, &dstvalue);
       res = gst_aiff_parse_pad_convert (pad, srcformat, srcvalue,
@@ -1540,6 +1555,10 @@ gst_aiff_parse_pad_query (GstPad * pad, GstObject * parent, GstQuery * query)
     }
     case GST_QUERY_SEEKING:{
       GstFormat fmt;
+
+      /* only if we know */
+      if (aiff->state != AIFF_PARSE_DATA)
+        break;
 
       gst_query_parse_seeking (query, &fmt, NULL, NULL, NULL);
       if (fmt == GST_FORMAT_TIME) {

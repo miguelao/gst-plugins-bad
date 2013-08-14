@@ -209,6 +209,12 @@ struct _GstSrtpDecSsrcStream
   GstSrtpAuthType rtcp_auth;
 };
 
+#define STREAM_HAS_CRYPTO(stream)                       \
+  (stream->rtp_cipher != GST_SRTP_CIPHER_NULL ||        \
+      stream->rtcp_cipher != GST_SRTP_CIPHER_NULL ||    \
+      stream->rtp_auth != GST_SRTP_AUTH_NULL ||         \
+      stream->rtcp_auth != GST_SRTP_AUTH_NULL)
+
 /* initialize the srtpdec's class */
 static void
 gst_srtp_dec_class_init (GstSrtpDecClass * klass)
@@ -421,10 +427,7 @@ get_stream_from_caps (GstSrtpDec * filter, GstCaps * caps, guint32 ssrc)
   if (gst_structure_get (s, "srtp-key", GST_TYPE_BUFFER, &buf, NULL) || !buf) {
     GST_DEBUG ("Got key [%p]", buf);
     stream->key = buf;
-  } else if (stream->rtp_cipher != GST_SRTP_CIPHER_NULL ||
-      stream->rtcp_cipher != GST_SRTP_CIPHER_NULL ||
-      stream->rtp_auth != GST_SRTP_AUTH_NULL ||
-      stream->rtcp_auth != GST_SRTP_AUTH_NULL) {
+  } else if (STREAM_HAS_CRYPTO (stream)) {
     goto error;
   }
 
@@ -855,6 +858,11 @@ gst_srtp_dec_chain (GstPad * pad, GstObject * parent, GstBuffer * buf,
     goto drop_buffer;
   }
 
+  if (!STREAM_HAS_CRYPTO (stream)) {
+    GST_OBJECT_UNLOCK (filter);
+    goto push_out;
+  }
+
   GST_LOG_OBJECT (pad, "Received %s buffer of size %" G_GSIZE_FORMAT
       " with SSRC = %u", is_rtcp ? "RTCP" : "RTP", gst_buffer_get_size (buf),
       ssrc);
@@ -878,18 +886,7 @@ unprotect:
 
   GST_OBJECT_UNLOCK (filter);
 
-  if (err == err_status_ok) {
-    gst_buffer_set_size (buf, size);
-    otherpad = (GstPad *) gst_pad_get_element_private (pad);
-
-    /* If all is well, we may have reached soft limit */
-    if (gst_srtp_get_soft_limit_reached ())
-      request_key_with_signal (filter, ssrc, SIGNAL_SOFT_LIMIT);
-
-    /* Push buffer to source pad */
-    ret = gst_pad_push (otherpad, buf);
-
-  } else {                      /* srtp_unprotect failed */
+  if (err != err_status_ok) {
     GST_WARNING_OBJECT (pad,
         "Unable to unprotect buffer (unprotect failed code %d)", err);
 
@@ -904,30 +901,45 @@ unprotect:
           if (request_key_with_signal (filter, ssrc, SIGNAL_HARD_LIMIT)) {
             GST_OBJECT_LOCK (filter);
             goto unprotect;
+          } else {
+            GST_WARNING_OBJECT (filter, "Hard limit reached, no new key, "
+                "dropping");
           }
-          goto drop_buffer;
+        } else {
+          GST_WARNING_OBJECT (filter, "Could not find matching stream, "
+              "dropping");
         }
         break;
-
       case err_status_auth_fail:
+        GST_WARNING_OBJECT (filter, "Error authentication packet, dropping");
+        break;
       case err_status_cipher_fail:
-        GST_ELEMENT_WARNING (filter, STREAM, DECRYPT,
-            ("Error while decryption stream"), (NULL));
-        ret = GST_FLOW_ERROR;
-        goto drop_buffer;
-
+        GST_WARNING_OBJECT (filter, "Error while decrypting packet, dropping");
+        break;
       default:
-        GST_WARNING_OBJECT (filter, "Other error");
-        goto drop_buffer;
+        GST_WARNING_OBJECT (filter, "Other error, dropping");
+        break;
     }
+
+    goto drop_buffer;
   }
+
+  gst_buffer_set_size (buf, size);
+
+  /* If all is well, we may have reached soft limit */
+  if (gst_srtp_get_soft_limit_reached ())
+    request_key_with_signal (filter, ssrc, SIGNAL_SOFT_LIMIT);
+
+push_out:
+  /* Push buffer to source pad */
+  otherpad = (GstPad *) gst_pad_get_element_private (pad);
+  ret = gst_pad_push (otherpad, buf);
+
 
   return ret;
 
-  /* Drop buffer, except if gst_pad_push returned OK or an error */
-
 drop_buffer:
-  GST_WARNING_OBJECT (pad, "Dropping buffer");
+  /* Drop buffer, except if gst_pad_push returned OK or an error */
 
   gst_buffer_unref (buf);
 

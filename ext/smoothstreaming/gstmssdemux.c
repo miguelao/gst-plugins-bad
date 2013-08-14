@@ -1022,6 +1022,7 @@ gst_mss_demux_stream_store_object (GstMssDemuxStream * stream,
     GstMiniObject * obj)
 {
   GstDataQueueItem *item;
+  gboolean ret = FALSE;
 
   item = g_slice_new (GstDataQueueItem);
   item->object = (GstMiniObject *) obj;
@@ -1032,7 +1033,13 @@ gst_mss_demux_stream_store_object (GstMssDemuxStream * stream,
 
   item->destroy = (GDestroyNotify) _free_data_queue_item;
 
-  if (!gst_data_queue_push (stream->dataqueue, item)) {
+  if (G_LIKELY (GST_IS_BUFFER (obj))) {
+    ret = gst_data_queue_push (stream->dataqueue, item);
+  } else {
+    ret = gst_data_queue_push_force (stream->dataqueue, item);
+  }
+
+  if (!ret) {
     GST_DEBUG_OBJECT (stream->parent, "Failed to store object %p", obj);
     item->destroy (item);
   }
@@ -1106,8 +1113,10 @@ gst_mss_demux_stream_download_fragment (GstMssDemuxStream * stream,
 
   after_download = g_get_real_time ();
   if (_buffer) {
+#ifndef GST_DISABLE_GST_DEBUG
     guint64 bitrate = (8 * gst_buffer_get_size (_buffer) * 1000000LLU) /
         (after_download - before_download);
+#endif
 
     GST_DEBUG_OBJECT (mssdemux,
         "Measured download bitrate: %s %" G_GUINT64_FORMAT " bps",

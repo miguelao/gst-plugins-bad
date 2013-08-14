@@ -51,20 +51,8 @@
  * See TODO for explanations on improvements needed
  */
 
-/* latency in mseconds */
-#define TS_LATENCY 700
-
-#define TABLE_ID_UNSET 0xFF
-
 #define CONTINUITY_UNSET 255
 #define MAX_CONTINUITY 15
-
-#define PCR_WRAP_SIZE_128KBPS (((gint64)1490)*(1024*1024))
-/* small PCR for wrap detection */
-#define PCR_SMALL 17775000
-/* maximal PCR time */
-#define PCR_MAX_VALUE (((((guint64)1)<<33) * 300) + 298)
-#define PTS_DTS_MAX_VALUE (((guint64)1) << 33)
 
 /* Seeking/Scanning related variables */
 
@@ -474,6 +462,24 @@ gst_ts_demux_srcpad_query (GstPad * pad, GstObject * parent, GstQuery * query)
       }
       break;
     }
+    case GST_QUERY_SEGMENT:{
+      GstFormat format;
+      gint64 start, stop;
+
+      format = demux->segment.format;
+
+      start =
+          gst_segment_to_stream_time (&demux->segment, format,
+          demux->segment.start);
+      if ((stop = demux->segment.stop) == -1)
+        stop = demux->segment.duration;
+      else
+        stop = gst_segment_to_stream_time (&demux->segment, format, stop);
+
+      gst_query_set_segment (query, demux->segment.rate, format, start, stop);
+      res = TRUE;
+      break;
+    }
     default:
       res = gst_pad_query_default (pad, parent, query);
   }
@@ -596,6 +602,11 @@ push_event (MpegTSBase * base, GstEvent * event)
   for (tmp = demux->program->stream_list; tmp; tmp = tmp->next) {
     TSDemuxStream *stream = (TSDemuxStream *) tmp->data;
     if (stream->pad) {
+      /* If we are pushing out EOS, flush out pending data first */
+      if (GST_EVENT_TYPE (event) == GST_EVENT_EOS && stream->active &&
+          gst_pad_is_active (stream->pad))
+        gst_ts_demux_push_pending_data (demux, stream);
+
       gst_event_ref (event);
       gst_pad_push_event (stream->pad, event);
     }
@@ -815,7 +826,7 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
         GST_LOG ("teletext");
         template = gst_static_pad_template_get (&private_template);
         name = g_strdup_printf ("private_%04x", bstream->pid);
-        caps = gst_caps_new_empty_simple ("private/teletext");
+        caps = gst_caps_new_empty_simple ("application/x-teletext");
         break;
       }
       desc =
@@ -941,12 +952,22 @@ create_pad_for_stream (MpegTSBase * base, MpegTSBaseStream * bstream,
         break;
       }
 
-      /* DVB_AC3 */
-      desc = mpegts_get_descriptor_from_stream (bstream, GST_MTS_DESC_DVB_AC3);
-      if (!desc)
-        GST_WARNING ("AC3 stream type found but no corresponding "
-            "descriptor to differentiate between AC3 and EAC3. "
-            "Assuming plain AC3.");
+      /* If stream has ac3 descriptor 
+       * OR program is ATSC (GA94)
+       * OR stream registration is AC-3
+       * then it's regular AC3 */
+      if (bstream->registration_id == DRF_ID_AC3 ||
+          program->registration_id == DRF_ID_GA94 ||
+          mpegts_get_descriptor_from_stream (bstream, GST_MTS_DESC_DVB_AC3)) {
+        template = gst_static_pad_template_get (&audio_template);
+        name = g_strdup_printf ("audio_%04x", bstream->pid);
+        caps = gst_caps_new_empty_simple ("audio/x-ac3");
+        break;
+      }
+
+      GST_WARNING ("AC3 stream type found but no guaranteed "
+          "way found to differentiate between AC3 and EAC3. "
+          "Assuming plain AC3.");
       template = gst_static_pad_template_get (&audio_template);
       name = g_strdup_printf ("audio_%04x", bstream->pid);
       caps = gst_caps_new_empty_simple ("audio/x-ac3");
@@ -1233,12 +1254,11 @@ gst_ts_demux_parse_pes_header (GstTSDemux * demux, TSDemuxStream * stream,
     guint8 * data, guint32 length, guint64 bufferoffset)
 {
   PESHeader header;
-  gint offset = 0;
   PESParsingResult parseres;
 
   GST_MEMDUMP ("Header buffer", data, MIN (length, 32));
 
-  parseres = mpegts_parse_pes_header (data, length, &header, &offset);
+  parseres = mpegts_parse_pes_header (data, length, &header);
   if (G_UNLIKELY (parseres == PES_PARSING_NEED_MORE))
     goto discont;
   if (G_UNLIKELY (parseres == PES_PARSING_BAD)) {

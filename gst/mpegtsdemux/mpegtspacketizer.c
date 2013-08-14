@@ -168,7 +168,7 @@ flush_observations (MpegTSPacketizer2 * packetizer)
     g_free (priv->observations[i]);
     priv->observations[i] = NULL;
   }
-  memset (priv->pcrtablelut, 0xff, 0x200);
+  memset (priv->pcrtablelut, 0xff, 0x2000);
   priv->lastobsid = 0;
 }
 
@@ -306,7 +306,7 @@ mpegts_packetizer_init (MpegTSPacketizer2 * packetizer)
   priv->mapped_size = 0;
   priv->offset = 0;
 
-  memset (priv->pcrtablelut, 0xff, 0x200);
+  memset (priv->pcrtablelut, 0xff, 0x2000);
   memset (priv->observations, 0x0, sizeof (priv->observations));
   priv->lastobsid = 0;
 
@@ -799,9 +799,11 @@ mpegts_packetizer_next_packet (MpegTSPacketizer2 * packetizer,
 
     GST_LOG ("Lost sync %d", packet_size);
 
-    /* Find the 0x47 in the buffer */
-    for (; sync_offset < priv->mapped_size; sync_offset++)
-      if (priv->mapped[sync_offset] == 0x47)
+    /* Find the 0x47 in the buffer (and require at least 2 checks) */
+    for (; sync_offset < priv->mapped_size + 2 * packet_size; sync_offset++)
+      if (priv->mapped[sync_offset] == 0x47 &&
+          priv->mapped[sync_offset + packet_size] == 0x47 &&
+          priv->mapped[sync_offset + 2 * packet_size] == 0x47)
         break;
 
     /* Pop out the remaining data... */

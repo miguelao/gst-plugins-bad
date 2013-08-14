@@ -284,12 +284,12 @@ gst_mpegv_parse_process_config (GstMpegvParse * mpvparse, GstMapInfo * info,
      used for codec private data */
   data_with_prefix = (guint8 *) packet.data + packet.offset - 4;
 
-  /* only do stuff if something new; only compare first 11 bytes, changes in
-     quantiser matrix doesn't matter here. Also changing the matrices in
-     codec_data seems to cause problem with decoders */
+  /* only do stuff if something new; only compare first 8 bytes, changes in
+     quantiser matrix or bitrate don't matter here. Also changing the
+     matrices in codec_data seems to cause problem with decoders */
   if (mpvparse->config &&
       gst_buffer_memcmp (mpvparse->config, 0, data_with_prefix, MIN (size,
-              11)) == 0) {
+              8)) == 0) {
     return TRUE;
   }
 
@@ -540,6 +540,21 @@ gst_mpegv_parse_process_sc (GstMpegvParse * mpvparse,
     else
       GST_LOG_OBJECT (mpvparse, "Couldn't parse picture at offset %d",
           mpvparse->pic_offset);
+
+    /* if terminating packet is a picture, we need to check if it has same TSN as the picture that is being
+       terminated. If it does, we need to keep those together, as these packets are two fields of the same
+       frame */
+    if (packet->type == GST_MPEG_VIDEO_PACKET_PICTURE) {
+      if (info->size - off < 2) {       /* we need at least two bytes to read the TSN */
+        ret = FALSE;
+      } else {
+        /* TSN is stored in first 10 bits */
+        int tsn = info->data[off] << 2 | (info->data[off + 1] & 0xC0) >> 6;
+
+        if (tsn == mpvparse->pichdr.tsn)        /* prevent termination if TSN is same */
+          ret = FALSE;
+      }
+    }
   }
 
   return ret;

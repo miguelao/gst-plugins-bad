@@ -227,11 +227,13 @@ static void gst_dash_demux_remove_streams (GstDashDemux * demux,
     GSList * streams);
 static void gst_dash_demux_stream_free (GstDashDemuxStream * stream);
 static void gst_dash_demux_reset (GstDashDemux * demux, gboolean dispose);
+#ifndef GST_DISABLE_GST_DEBUG
 static GstClockTime gst_dash_demux_get_buffering_time (GstDashDemux * demux);
-static GstCaps *gst_dash_demux_get_input_caps (GstDashDemux * demux,
-    GstActiveStream * stream);
 static GstClockTime gst_dash_demux_stream_get_buffering_time (GstDashDemuxStream
     * stream);
+#endif
+static GstCaps *gst_dash_demux_get_input_caps (GstDashDemux * demux,
+    GstActiveStream * stream);
 static GstPad *gst_dash_demux_create_pad (GstDashDemux * demux);
 
 #define gst_dash_demux_parent_class parent_class
@@ -452,7 +454,7 @@ gst_dash_demux_stream_push_event (GstDashDemuxStream * stream, GstEvent * event)
   item->object = GST_MINI_OBJECT_CAST (event);
   item->destroy = (GDestroyNotify) _data_queue_item_destroy;
 
-  gst_data_queue_push (stream->queue, item);
+  gst_data_queue_push_force (stream->queue, item);
 }
 
 static void
@@ -644,16 +646,19 @@ gst_dash_demux_src_event (GstPad * pad, GstObject * parent, GstEvent * event)
   return gst_pad_event_default (pad, parent, event);
 }
 
-static void
+static gboolean
 gst_dash_demux_setup_mpdparser_streams (GstDashDemux * demux,
     GstMpdClient * client)
 {
   GList *listLang = NULL;
   guint i, nb_audio;
   gchar *lang;
+  gboolean has_streams = FALSE;
 
   if (!gst_mpd_client_setup_streaming (client, GST_STREAM_VIDEO, ""))
     GST_INFO_OBJECT (demux, "No video adaptation set found");
+  else
+    has_streams = TRUE;
 
   nb_audio =
       gst_mpdparser_get_list_and_nb_of_audio_language (client, &listLang);
@@ -667,12 +672,23 @@ gst_dash_demux_setup_mpdparser_streams (GstDashDemux * demux,
         gst_mpdparser_get_nb_adaptationSet (client));
     if (!gst_mpd_client_setup_streaming (client, GST_STREAM_AUDIO, lang))
       GST_INFO_OBJECT (demux, "No audio adaptation set found");
+    else
+      has_streams = TRUE;
 
-    if (gst_mpdparser_get_nb_adaptationSet (client) > nb_audio)
+    if (gst_mpdparser_get_nb_adaptationSet (client) > nb_audio) {
       if (!gst_mpd_client_setup_streaming (client,
-              GST_STREAM_APPLICATION, lang))
+              GST_STREAM_APPLICATION, lang)) {
         GST_INFO_OBJECT (demux, "No application adaptation set found");
+      } else {
+        has_streams = TRUE;
+      }
+    }
   }
+  if (!has_streams) {
+    GST_ELEMENT_ERROR (demux, STREAM, DEMUX, ("Manifest has no playable "
+        "streams"), ("No streams could be activated from the manifest"));
+  }
+  return has_streams;
 }
 
 static gboolean
@@ -685,7 +701,9 @@ gst_dash_demux_setup_all_streams (GstDashDemux * demux)
   /* clean old active stream list, if any */
   gst_active_streams_free (demux->client);
 
-  gst_dash_demux_setup_mpdparser_streams (demux, demux->client);
+  if (!gst_dash_demux_setup_mpdparser_streams (demux, demux->client)) {
+    return FALSE;
+  }
 
   GST_DEBUG_OBJECT (demux, "Creating stream objects");
   for (i = 0; i < gst_mpdparser_get_nb_active_stream (demux->client); i++) {
@@ -1214,7 +1232,7 @@ gst_dash_demux_stream_loop (GstDashDemux * demux)
         break;
       }
     } else {
-      GST_DEBUG_OBJECT (demux, "Non buffers have preference %p", item->object);
+      GST_DEBUG_OBJECT (demux, "Non buffers have preference %" GST_PTR_FORMAT, item->object);
       selected_stream = stream;
       break;
     }
@@ -1409,6 +1427,7 @@ gst_dash_demux_reset (GstDashDemux * demux, gboolean dispose)
   demux->cancelled = FALSE;
 }
 
+#ifndef GST_DISABLE_GST_DEBUG
 static GstClockTime
 gst_dash_demux_get_buffering_time (GstDashDemux * demux)
 {
@@ -1436,6 +1455,7 @@ gst_dash_demux_stream_get_buffering_time (GstDashDemuxStream * stream)
 
   return (GstClockTime) level.time;
 }
+#endif
 
 static gboolean
 gst_dash_demux_all_streams_have_data (GstDashDemux * demux)
@@ -1530,7 +1550,11 @@ gst_dash_demux_refresh_mpd (GstDashDemux * demux)
             }
           }
 
-          gst_dash_demux_setup_mpdparser_streams (demux, new_client);
+          if (!gst_dash_demux_setup_mpdparser_streams (demux, new_client)) {
+            GST_ERROR_OBJECT (demux, "Failed to setup streams on manifest "
+                "update");
+            return GST_FLOW_ERROR;
+          }
 
           /* update the streams to play from the next segment */
           for (iter = demux->streams; iter; iter = g_slist_next (iter)) {
@@ -1731,6 +1755,7 @@ gst_dash_demux_download_loop (GstDashDemux * demux)
   demux->client->update_failed_count = 0;
 
 quit:
+  GST_DEBUG_OBJECT (demux, "Finishing download loop");
   return;
 
 cancelled:
@@ -2186,12 +2211,16 @@ gst_dash_demux_get_next_fragment (GstDashDemux * demux,
   /* Wake the download task up */
   GST_TASK_SIGNAL (demux->download_task);
   if (selected_stream) {
+#ifndef GST_DISABLE_GST_DEBUG
     guint64 brate;
+#endif
 
     diff = (GST_TIMEVAL_TO_TIME (now) - GST_TIMEVAL_TO_TIME (start));
     gst_download_rate_add_rate (&selected_stream->dnl_rate, size_buffer, diff);
 
+#ifndef GST_DISABLE_GST_DEBUG
     brate = (size_buffer * 8) / ((double) diff / GST_SECOND);
+#endif
     GST_INFO_OBJECT (demux,
         "Stream: %d Download rate = %" PRIu64 " Kbits/s (%" PRIu64
         " Ko in %.2f s)", selected_stream->index,
