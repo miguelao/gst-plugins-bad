@@ -707,15 +707,13 @@ gst_flups_demux_send_event (GstFluPSDemux * demux, GstEvent * event)
   for (i = 0; i < count; i++) {
     GstFluPSStream *stream = demux->streams_found[i];
 
-    if (stream && !stream->notlinked) {
-      (void) gst_event_ref (event);
-
-      if (!gst_pad_push_event (stream->pad, event)) {
-        GST_DEBUG_OBJECT (stream, "event %s was not handled correctly",
+    if (stream) {
+      if (!gst_pad_push_event (stream->pad, gst_event_ref (event))) {
+        GST_DEBUG_OBJECT (stream->pad, "%s event was not handled",
             GST_EVENT_TYPE_NAME (event));
       } else {
         /* If at least one push returns TRUE, then we return TRUE. */
-        GST_DEBUG_OBJECT (stream, "event %s was handled correctly",
+        GST_DEBUG_OBJECT (stream->pad, "%s event was handled",
             GST_EVENT_TYPE_NAME (event));
         ret = TRUE;
       }

@@ -576,16 +576,8 @@ gst_h264_parse_process_nal (GstH264Parse * h264parse, GstH264NalUnit * nalu)
             "parse result %d, first MB: %u, slice type: %u",
             pres, slice.first_mb_in_slice, slice.type);
         if (pres == GST_H264_PARSER_OK) {
-          switch (slice.type) {
-            case 2:
-            case 4:
-            case 7:
-            case 9:
-              h264parse->keyframe |= TRUE;
-
-            default:
-              break;
-          }
+          if (GST_H264_IS_I_SLICE (&slice) || GST_H264_IS_SI_SLICE (&slice))
+            h264parse->keyframe |= TRUE;
         }
       }
       if (G_LIKELY (nal_type != GST_H264_NAL_SLICE_IDR &&
@@ -1150,7 +1142,7 @@ static void
 gst_h264_parse_update_src_caps (GstH264Parse * h264parse, GstCaps * caps)
 {
   GstH264SPS *sps;
-  GstCaps *sink_caps;
+  GstCaps *sink_caps, *src_caps;
   gboolean modified = FALSE;
   GstBuffer *buf = NULL;
   GstStructure *s = NULL;
@@ -1323,7 +1315,13 @@ gst_h264_parse_update_src_caps (GstH264Parse * h264parse, GstCaps * caps)
       gst_structure_remove_field (s, "codec_data");
       gst_buffer_replace (&h264parse->codec_data, NULL);
     }
-    gst_pad_set_caps (GST_BASE_PARSE_SRC_PAD (h264parse), caps);
+
+    src_caps = gst_pad_get_current_caps (GST_BASE_PARSE_SRC_PAD (h264parse));
+    if (!(src_caps && gst_caps_is_strictly_equal (src_caps, caps)))
+      gst_pad_set_caps (GST_BASE_PARSE_SRC_PAD (h264parse), caps);
+
+    if (src_caps)
+      gst_caps_unref (src_caps);
     gst_caps_unref (caps);
   }
 
@@ -1902,10 +1900,13 @@ gst_h264_parse_set_caps (GstBaseParse * parse, GstCaps * caps)
   }
 
   if (format == h264parse->format && align == h264parse->align) {
-    gst_base_parse_set_passthrough (parse, TRUE);
+    /* do not set CAPS and passthrough mode if SPS/PPS have not been parsed */
+    if (h264parse->have_sps && h264parse->have_pps) {
+      gst_base_parse_set_passthrough (parse, TRUE);
 
-    /* we did parse codec-data and might supplement src caps */
-    gst_h264_parse_update_src_caps (h264parse, caps);
+      /* we did parse codec-data and might supplement src caps */
+      gst_h264_parse_update_src_caps (h264parse, caps);
+    }
   } else if (format == GST_H264_PARSE_FORMAT_AVC) {
     /* if input != output, and input is avc, must split before anything else */
     /* arrange to insert codec-data in-stream if needed.
