@@ -19,6 +19,32 @@
  * Boston, MA 02110-1301, USA.
  */
 
+/**
+ * SECTION:plugin-openni2src
+ *
+ * OpenNI2 is a library to access 3D sensors such as those based on PrimeSense
+ * depth sensor. Examples of such sensors are the Kinect used in Microsoft Xbox
+ * consoles and Asus WAVI Xtion. Notably recordings of 3D sessions can also be
+ * replayed as the original devices. See www.openni.org for more details.
+ *
+ * OpenNI2 can be downloaded from source, compiled and installed in Linux, Mac
+ * and Windows devices(https://github.com/OpenNI/OpenNI2). However is better to
+ * rely on Debian packages as part of the PCL library (or http://goo.gl/0o87EB).
+ * More concretely on the "libopenni2-dev" and "libopenni2" packages - that can
+ * be downloaded in http://goo.gl/2H6SZ6.
+ *
+ * <refsect2>
+ * <title>Examples</title>
+ * <para>
+ * Some recorded .oni files are available at:
+ * <programlisting>
+ *  http://people.cs.pitt.edu/~chang/1635/proj11/kinectRecord
+ * </programlisting>
+ * </para>
+ * </refsect2>
+ */
+
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
