@@ -73,6 +73,7 @@ GObject
           GstRTMPSink
           GstShmSink
           GstVideoSink
+            GstDfbVideoSink
             GstEglGlesSink
             GstFBDEVSink
             GstWaylandSink
@@ -361,6 +362,7 @@ GObject
       GstRegistry
       GstTask
       GstTaskPool
+  GstColorBalanceChannel
   GstEncodingProfile
   GstVdpDevice
   MXFMetadataBase
@@ -439,6 +441,7 @@ GObject
 GInterface
   GTypePlugin
   GstChildProxy
+  GstColorBalance
   GstNavigation
   GstPhotography
   GstPreset
