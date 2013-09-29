@@ -49,7 +49,7 @@
  * <refsect2>
  * <title>Example launch line</title>
  * |[
- * gst-launch-1.0 --gst-debug=opticalflow=4  v4l2src device=/dev/video0 ! videoconvert ! opticalflow ! videoconvert ! video/x-raw,width=320,height=240 ! ximagesink
+ * gst-launch-1.0 --gst-debug=opticalflow=4  v4l2src device=/dev/video0 ! videoconvert ! opticalflow test-mode=true ! videoconvert ! video/x-raw,width=320,height=240 ! ximagesink
  * ]|
  * </refsect2>
  */
@@ -288,17 +288,18 @@ gst_opticalflow_release_all_pointers (GstOpticalflow * filter)
 static GstFlowReturn
 gst_opticalflow_transform_ip (GstVideoFilter * btrans, GstVideoFrame * frame)
 {
-  GstOpticalflow *gc = GST_OPTICALFLOW (btrans);
+  GstOpticalflow *of = GST_OPTICALFLOW (btrans);
 
-  gc->cvRGBAin->imageData = (char *) GST_VIDEO_FRAME_COMP_DATA (frame, 0);
+  of->cvRGBAin->imageData = (char *) GST_VIDEO_FRAME_COMP_DATA (frame, 0);
 
   /*  normally input should be RGBA */
-  cvSplit (gc->cvRGBAin, gc->cvA, gc->cvB, gc->cvC, gc->cvD);
-  cvCvtColor (gc->cvRGBAin, gc->cvRGBin, CV_BGRA2BGR);
+  cvSplit (of->cvRGBAin, of->cvA, of->cvB, of->cvC, of->cvD);
+  cvCvtColor (of->cvRGBAin, of->cvRGBin, CV_BGRA2BGR);
 
   /* Run optical flow now */
-  cvGoodFeaturesToTrack( gc->cvA, gc->eig_image, gc->tmp_image,
-      gc->cornersA, &gc->corner_count,
+  of->corner_count = of->MAX_CORNERS;
+  cvGoodFeaturesToTrack( of->cvB, of->eig_image, of->tmp_image,
+      of->cornersA, &of->corner_count,
       0.05,  // qualityLevel
       5.0,  // minDistance
       0,  // mask
@@ -306,33 +307,35 @@ gst_opticalflow_transform_ip (GstVideoFilter * btrans, GstVideoFrame * frame)
       0,  // useHarrisDetector
       0.04 );  // k, free parameter of Harris detector.
 
-  cvFindCornerSubPix( gc->cvA, gc->cornersA, gc->corner_count,
-      cvSize( 15, 15 ),
-      cvSize( -1, -1 ),
-      cvTermCriteria( CV_TERMCRIT_ITER | CV_TERMCRIT_EPS, 20, 0.03 ));
+  //cvFindCornerSubPix( of->cvA, of->cornersA, of->corner_count,
+  //    cvSize( 15, 15 ),
+  //    cvSize( -1, -1 ),
+  //    cvTermCriteria( CV_TERMCRIT_ITER | CV_TERMCRIT_EPS, 20, 0.03 ));
 
-  cvCalcOpticalFlowPyrLK( gc->cvA_prev, gc->cvA,
-      gc->pyrA, gc->pyrB, gc->cornersA, gc->cornersB, gc->corner_count,
-      cvSize( 15, 15 ), 5, gc->features_found, gc->feature_errors,
+  cvCalcOpticalFlowPyrLK( of->cvA_prev, of->cvB,
+      of->pyrA, of->pyrB, of->cornersA, of->cornersB, of->corner_count,
+      cvSize( 25, 25 ), 5, of->features_found, of->feature_errors,
       cvTermCriteria( CV_TERMCRIT_ITER | CV_TERMCRIT_EPS, 20, 0.3 ), 0 );
 
-  printf(" Current count is %d\n", gc->corner_count);
+  printf(" Current count is %d\n", of->corner_count);
   /* Keep current frame for next iteration */
-  cvCopy(gc->cvA, gc->cvA_prev, NULL);
+  cvCopy(of->cvB, of->cvA_prev, NULL);
 
   /*  if we want to display, just overwrite the output */
-  if (gc->test_mode) {
+  if (of->test_mode) {
 
   }
 
-  cvMerge (gc->cvA, gc->cvB, gc->cvC, gc->cvD, gc->cvRGBAin);
+  cvMerge (of->cvA, of->cvB, of->cvC, of->cvD, of->cvRGBAin);
 
   CvPoint p0, p1;
-  if (gc->test_mode) {
-    for (int i=0; i<gc->corner_count; ++i){
-      p0 = cvPoint((int)(gc->cornersA[i].x), (int)(gc->cornersA[i].y));
-      p1 = cvPoint((int)(gc->cornersB[i].x), (int)(gc->cornersB[i].y));
-      cvLine( gc->cvRGBAin, p0, p1, CV_RGB(255,0,0), 2 );
+  if (of->test_mode) {
+    for (int i=0; i<of->corner_count; ++i){
+      if (of->features_found[i]){
+        p0 = cvPoint((int)(of->cornersA[i].x), (int)(of->cornersA[i].y));
+        p1 = cvPoint((int)(of->cornersB[i].x), (int)(of->cornersB[i].y));
+        cvLine( of->cvRGBAin, p0, p1, CV_RGB(255,0,0), 1 );
+      }
     }
   }
 
