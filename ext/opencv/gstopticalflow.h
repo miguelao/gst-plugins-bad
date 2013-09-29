@@ -72,13 +72,18 @@ struct _GstOpticalflow
   gboolean test_mode;
   float scale;
 
-  IplImage *cvRGBAin, *cvRGBin;
+  IplImage *cvRGBAin, *cvRGBin, *cvA_prev;
   IplImage *eig_image, *tmp_image;
+  IplImage *pyrA, *pyrB;
   IplImage *cvA, *cvB, *cvC, *cvD;
 
   int MAX_CORNERS;
   int corner_count;
-  CvPoint2D32f* cornersA;
+  char* features_found;
+  float* feature_errors;
+  CvSize pyr_sz;
+  CvPoint2D32f *cornersA, *cornersB;
+
 };
 
 struct _GstOpticalflowClass

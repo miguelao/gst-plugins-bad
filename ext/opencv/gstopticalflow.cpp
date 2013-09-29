@@ -49,11 +49,7 @@
  * <refsect2>
  * <title>Example launch line</title>
  * |[
- * gst-launch-1.0 --gst-debug=Opticalflow=4  v4l2src device=/dev/video0 ! videoconvert ! Opticalflow ! videoconvert ! video/x-raw,width=320,height=240 ! ximagesink
- * ]|
- * Another example launch line
- * |[
- * gst-launch-1.0 --gst-debug=Opticalflow=4  v4l2src device=/dev/video0 ! videoconvert ! facedetect display=0 ! videoconvert ! Opticalflow test-mode=true ! videoconvert ! video/x-raw,width=320,height=240 ! ximagesink
+ * gst-launch-1.0 --gst-debug=opticalflow=4  v4l2src device=/dev/video0 ! videoconvert ! opticalflow ! videoconvert ! video/x-raw,width=320,height=240 ! ximagesink
  * ]|
  * </refsect2>
  */
@@ -219,28 +215,37 @@ gst_opticalflow_set_info (GstVideoFilter * filter,
     GstCaps * incaps, GstVideoInfo * in_info,
     GstCaps * outcaps, GstVideoInfo * out_info)
 {
-  GstOpticalflow *Opticalflow = GST_OPTICALFLOW (filter);
+  GstOpticalflow *of = GST_OPTICALFLOW (filter);
   CvSize size;
 
   size = cvSize (in_info->width, in_info->height);
   /* If cvRGBA is already allocated, it means there's a cap modification,
      so release first all the images.                                      */
-  if (NULL != Opticalflow->cvRGBAin)
-    gst_opticalflow_release_all_pointers (Opticalflow);
+  if (NULL != of->cvRGBAin)
+    gst_opticalflow_release_all_pointers (of);
 
-  Opticalflow->cvRGBAin = cvCreateImageHeader (size, IPL_DEPTH_8U, 4);
-  Opticalflow->cvRGBin = cvCreateImage (size, IPL_DEPTH_8U, 3);
+  of->cvRGBAin = cvCreateImageHeader (size, IPL_DEPTH_8U, 4);
+  of->cvRGBin = cvCreateImage (size, IPL_DEPTH_8U, 3);
 
-  Opticalflow->eig_image = cvCreateImage( size, IPL_DEPTH_32F, 1 );
-  Opticalflow->tmp_image = cvCreateImage( size, IPL_DEPTH_32F, 1 );
+  of->eig_image = cvCreateImage( size, IPL_DEPTH_32F, 1 );
+  of->tmp_image = cvCreateImage( size, IPL_DEPTH_32F, 1 );
 
-  Opticalflow->cvA = cvCreateImage (size, IPL_DEPTH_8U, 1);
-  Opticalflow->cvB = cvCreateImage (size, IPL_DEPTH_8U, 1);
-  Opticalflow->cvC = cvCreateImage (size, IPL_DEPTH_8U, 1);
-  Opticalflow->cvD = cvCreateImage (size, IPL_DEPTH_8U, 1);
+  of->pyr_sz = cvSize( in_info->width+8, in_info->height/3 );
+  of->pyrA = cvCreateImage( of->pyr_sz, IPL_DEPTH_32F, 1 );
+  of->pyrB = cvCreateImage( of->pyr_sz, IPL_DEPTH_32F, 1 );
 
-  Opticalflow->corner_count = Opticalflow->MAX_CORNERS;
-  Opticalflow->cornersA = new CvPoint2D32f[ Opticalflow->MAX_CORNERS ];
+  of->cvA = cvCreateImage (size, IPL_DEPTH_8U, 1);
+  of->cvB = cvCreateImage (size, IPL_DEPTH_8U, 1);
+  of->cvC = cvCreateImage (size, IPL_DEPTH_8U, 1);
+  of->cvD = cvCreateImage (size, IPL_DEPTH_8U, 1);
+  of->cvA_prev = cvCreateImage (size, IPL_DEPTH_8U, 1);
+
+  of->features_found = new char[ of->MAX_CORNERS ];
+  of->feature_errors = new float[ of->MAX_CORNERS ];
+
+  of->corner_count = of->MAX_CORNERS;
+  of->cornersA = new CvPoint2D32f[ of->MAX_CORNERS ];
+  of->cornersB = new CvPoint2D32f[ of->MAX_CORNERS ];
 
   return TRUE;
 }
@@ -263,12 +268,21 @@ gst_opticalflow_release_all_pointers (GstOpticalflow * filter)
   cvReleaseImage (&filter->cvRGBAin);
   cvReleaseImage (&filter->cvRGBin);
 
+  cvReleaseImage (&filter->eig_image);
+  cvReleaseImage (&filter->tmp_image);
+  cvReleaseImage (&filter->pyrA);
+  cvReleaseImage (&filter->pyrB);
+
   cvReleaseImage (&filter->cvA);
   cvReleaseImage (&filter->cvB);
   cvReleaseImage (&filter->cvC);
   cvReleaseImage (&filter->cvD);
+  cvReleaseImage (&filter->cvA_prev);
 
+  delete filter->features_found;
+  delete filter->feature_errors;
   delete filter->cornersA;
+  delete filter->cornersB;
 }
 
 static GstFlowReturn
@@ -283,14 +297,28 @@ gst_opticalflow_transform_ip (GstVideoFilter * btrans, GstVideoFrame * frame)
   cvCvtColor (gc->cvRGBAin, gc->cvRGBin, CV_BGRA2BGR);
 
   /* Run optical flow now */
-  cvGoodFeaturesToTrack( gc->cvRGBin, gc->eig_image, gc->tmp_image,
-    gc->cornersA, &gc->corner_count,
-    0.05,  // qualityLevel
-    5.0,  // minDistance
-    0,  // mask
-    3,  // blockSize
-    0,  // useHarrisDetector
-    0.04 );  // k, free parameter of Harris detector.
+  cvGoodFeaturesToTrack( gc->cvA, gc->eig_image, gc->tmp_image,
+      gc->cornersA, &gc->corner_count,
+      0.05,  // qualityLevel
+      5.0,  // minDistance
+      0,  // mask
+      3,  // blockSize
+      0,  // useHarrisDetector
+      0.04 );  // k, free parameter of Harris detector.
+
+  cvFindCornerSubPix( gc->cvA, gc->cornersA, gc->corner_count,
+      cvSize( 15, 15 ),
+      cvSize( -1, -1 ),
+      cvTermCriteria( CV_TERMCRIT_ITER | CV_TERMCRIT_EPS, 20, 0.03 ));
+
+  cvCalcOpticalFlowPyrLK( gc->cvA_prev, gc->cvA,
+      gc->pyrA, gc->pyrB, gc->cornersA, gc->cornersB, gc->corner_count,
+      cvSize( 15, 15 ), 5, gc->features_found, gc->feature_errors,
+      cvTermCriteria( CV_TERMCRIT_ITER | CV_TERMCRIT_EPS, 20, 0.3 ), 0 );
+
+  printf(" Current count is %d\n", gc->corner_count);
+  /* Keep current frame for next iteration */
+  cvCopy(gc->cvA, gc->cvA_prev, NULL);
 
   /*  if we want to display, just overwrite the output */
   if (gc->test_mode) {
@@ -299,8 +327,13 @@ gst_opticalflow_transform_ip (GstVideoFilter * btrans, GstVideoFrame * frame)
 
   cvMerge (gc->cvA, gc->cvB, gc->cvC, gc->cvD, gc->cvRGBAin);
 
+  CvPoint p0, p1;
   if (gc->test_mode) {
-
+    for (int i=0; i<gc->corner_count; ++i){
+      p0 = cvPoint((int)(gc->cornersA[i].x), (int)(gc->cornersA[i].y));
+      p1 = cvPoint((int)(gc->cornersB[i].x), (int)(gc->cornersB[i].y));
+      cvLine( gc->cvRGBAin, p0, p1, CV_RGB(255,0,0), 2 );
+    }
   }
 
   return GST_FLOW_OK;
