@@ -69,20 +69,24 @@ struct _GstOpticalflow
 {
   GstVideoFilter element;
   gint width, height;
+  gint method;
   gboolean test_mode;
-  float scale;
-
-  IplImage *cvRGBAin, *cvRGBin, *cvA_prev;
-  IplImage *eig_image, *tmp_image;
-  IplImage *pyrA, *pyrB;
-  IplImage *cvA, *cvB, *cvC, *cvD;
-
-  int MAX_CORNERS;
   int corner_count;
+  int MAX_CORNERS;
+
+  IplImage *cvRGBAin, *cvRGBin;
+  IplImage *cvA, *cvB, *cvC, *cvD;
+  IplImage *cvGray1, *cvGray0;
+
+  /* PyrLK sparse algorithm */
   char* features_found;
   float* feature_errors;
   CvSize pyr_sz;
+  IplImage *pyrA, *pyrB;
   CvPoint2D32f *cornersA, *cornersB;
+
+  /* Farneback dense algorithm */
+  CvMat *cvFlow;
 
 };
 
