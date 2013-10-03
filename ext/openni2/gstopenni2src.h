@@ -12,18 +12,19 @@
  * General Public License for more details. You should have received a copy
  * of the GNU Library General Public License along with this library; if
  * not, write to the Free Software Foundation, Inc., 51 Franklin St,
- * Fifth Floor, Boston, MA 02110-1301, USA. 
+ * Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
 #ifndef __GST_OPENNI2_SRC_H__
 #define __GST_OPENNI2_SRC_H__
 
 #include <gst/gst.h>
+#include <stdio.h>
+#include <OpenNI.h>
+
 #include <gst/base/gstbasesrc.h>
 #include <gst/base/gstpushsrc.h>
-#include <stdio.h>
-
-#include <OpenNI.h>
+#include <gst/video/video.h>
 
 G_BEGIN_DECLS
 #define GST_TYPE_OPENNI2_SRC \
@@ -53,6 +54,8 @@ struct _GstOpenni2Src
   GstOpenni2State state;
   gchar *uri_name;
   gint sourcetype;
+  GstVideoInfo gst_info;
+  GstVideoFrame *video_frame;
 
   /* OpenNI2 variables */
   openni::Device device;

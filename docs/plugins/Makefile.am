@@ -93,12 +93,18 @@ EXTRA_HFILES = \
 	$(top_srcdir)/ext/opencv/gstcvlaplace.h \
 	$(top_srcdir)/ext/opencv/gstcvsmooth.h \
 	$(top_srcdir)/ext/opencv/gstcvsobel.h \
+	$(top_srcdir)/ext/opencv/gstdisparity.h \
 	$(top_srcdir)/ext/opencv/gstedgedetect.h \
 	$(top_srcdir)/ext/opencv/gstfaceblur.h \
 	$(top_srcdir)/ext/opencv/gstfacedetect.h \
+	$(top_srcdir)/ext/opencv/gstgrabcut.h \
 	$(top_srcdir)/ext/opencv/gstpyramidsegment.h \
+	$(top_srcdir)/ext/opencv/gstretinex.h \
+	$(top_srcdir)/ext/opencv/gstsegmentation.h \
+	$(top_srcdir)/ext/opencv/gstskindetect.h \
 	$(top_srcdir)/ext/opencv/gsttemplatematch.h \
 	$(top_srcdir)/ext/opencv/gsttextoverlay.h \
+	$(top_srcdir)/ext/openni2/gstopenni2src.h \
 	$(top_srcdir)/ext/rsvg/gstrsvgdec.h \
 	$(top_srcdir)/ext/rsvg/gstrsvgoverlay.h \
 	$(top_srcdir)/ext/spandsp/gstspanplc.h \
