@@ -150,7 +150,7 @@ LIBFAME_DIR=
 
 if USE_LIBMMS
 LIBMMS_DIR=libmms
-else 
+else
 LIBMMS_DIR=
 endif
 
@@ -224,6 +224,12 @@ if USE_OPENCV
 OPENCV_DIR=opencv
 else
 OPENCV_DIR=
+endif
+
+if USE_OPENNI2
+OPENNI2_DIR=openni2
+else
+OPENNI2_DIR=
 endif
 
 if USE_OPENJPEG
@@ -417,6 +423,7 @@ SUBDIRS=\
 	$(OFA_DIR) \
 	$(OPENAL_DIR) \
 	$(OPENCV_DIR) \
+	$(OPENNI2_DIR) \
 	$(OPENJPEG_DIR) \
 	$(OPUS_DIR) \
 	$(RSVG_DIR) \
@@ -476,6 +483,7 @@ DIST_SUBDIRS = \
 	ofa \
 	openal \
 	opencv \
+	openni2 \
 	openjpeg \
 	opus \
 	rsvg \

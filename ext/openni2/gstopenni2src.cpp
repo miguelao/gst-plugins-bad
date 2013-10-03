@@ -111,7 +111,7 @@ static GstFlowReturn gst_openni2src_fill (GstPushSrc * src,
 					  GstBuffer * buf);
 
 /* OpenNI2 interaction methods */
-static gboolean openni2_initialise_library (GstOpenni2Src * src);
+static gboolean openni2_initialise_library ();
 static GstFlowReturn openni2_initialise_devices (GstOpenni2Src * src);
 static GstFlowReturn openni2_read_GstBuffer (GstOpenni2Src * src,
 					     GstBuffer * buf);
@@ -169,15 +169,15 @@ gst_openni2_src_class_init (GstOpenni2SrcClass * klass)
 
   GST_DEBUG_CATEGORY_INIT (openni2src_debug, "openni2src", 0,
       "OpenNI2 Device Source");
+
+  /* OpenNI2 initialisation inside this function */
+  openni2_initialise_library();
 }
 
 static void
 gst_openni2_src_init (GstOpenni2Src * ni2src)
 {
   gst_base_src_set_format (GST_BASE_SRC (ni2src), GST_FORMAT_BYTES);
-
-  /* OpenNI2 initialisation inside this function */
-  openni2_initialise_library (ni2src);
 }
 
 static void
@@ -281,7 +281,7 @@ gst_openni2_src_start (GstBaseSrc * bsrc)
       return FALSE;
     }
   }
-
+  src->video_frame = (GstVideoFrame*)malloc(sizeof(GstVideoFrame));
   return TRUE;
 }
 
@@ -295,7 +295,7 @@ gst_openni2_src_stop (GstBaseSrc * bsrc)
   if (src->color.isValid ())
     src->color.stop();
 
-  openni2_finalise (src);
+  free(src->video_frame);
   return TRUE;
 }
 
@@ -303,7 +303,7 @@ static GstCaps *
 gst_openni2_src_get_caps (GstBaseSrc * src, GstCaps * filter)
 {
   GstOpenni2Src *ni2src;
-  GstCaps *ret;
+  GstCaps *ret = gst_caps_new_empty();
 
   ni2src = GST_OPENNI2_SRC (src);
   if (ni2src->colorpixfmt != openni::PIXEL_FORMAT_RGB888){
@@ -337,8 +337,8 @@ gst_openni2_src_get_caps (GstBaseSrc * src, GstCaps * filter)
 			       "height", G_TYPE_INT, ni2src->height,
 			       NULL);
   }
-  //ni2src->probed_caps = gst_caps_ref (ret);
-  GST_WARNING_OBJECT (ni2src, "probed caps: %" GST_PTR_FORMAT, ret);
+  GST_INFO_OBJECT (ni2src, "probed caps: %" GST_PTR_FORMAT, ret);
+  gst_video_info_from_caps(&(ni2src->gst_info), ret);
   return ret;
 }
 
@@ -370,7 +370,7 @@ gst_openni2_src_change_state (GstElement * element, GstStateChange transition)
 
   switch (transition) {
     case GST_STATE_CHANGE_READY_TO_NULL:
-      openni2_finalise (src);
+      gst_openni2_src_stop(GST_BASE_SRC(src));
       break;
     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
     case GST_STATE_CHANGE_PAUSED_TO_READY:
@@ -399,13 +399,12 @@ gst_openni2src_plugin_init (GstPlugin * plugin)
 
 
 static gboolean
-openni2_initialise_library (GstOpenni2Src * src)
+openni2_initialise_library ()
 {
   openni::Status rc = openni::STATUS_OK;
   rc = openni::OpenNI::initialize ();
   if (rc != openni::STATUS_OK) {
-    GST_ERROR_OBJECT (src, "Initialization failed: %s",
-        openni::OpenNI::getExtendedError ());
+    GST_ERROR("Initialization failed: %s", openni::OpenNI::getExtendedError ());
     openni::OpenNI::shutdown ();
     return GST_FLOW_ERROR;
   }
@@ -483,7 +482,7 @@ openni2_initialise_devices (GstOpenni2Src * src)
           depthWidth, depthHeight, colorWidth, colorHeight);
       return GST_FLOW_ERROR;
     }
-    GST_WARNING_OBJECT (src, "DEPTH&COLOR resolution: %dx%d",
+    GST_INFO_OBJECT (src, "DEPTH&COLOR resolution: %dx%d",
 			src->width, src->height);
   } else if (src->depth.isValid ()) {
     src->depthVideoMode = src->depth.getVideoMode ();
@@ -491,14 +490,14 @@ openni2_initialise_devices (GstOpenni2Src * src)
     src->height = src->depthVideoMode.getResolutionY ();
     src->fps = src->depthVideoMode.getFps();
     src->depthpixfmt = src->depthVideoMode.getPixelFormat();
-    GST_WARNING_OBJECT (src, "DEPTH resolution: %dx%d", src->width, src->height);
+    GST_INFO_OBJECT (src, "DEPTH resolution: %dx%d", src->width, src->height);
   } else if (src->color.isValid ()) {
     src->colorVideoMode = src->color.getVideoMode ();
     src->width = src->colorVideoMode.getResolutionX ();
     src->height = src->colorVideoMode.getResolutionY ();
     src->fps = src->colorVideoMode.getFps();
     src->colorpixfmt = src->colorVideoMode.getPixelFormat();
-    GST_WARNING_OBJECT (src, "COLOR resolution: %dx%d", src->width, src->height);
+    GST_INFO_OBJECT (src, "COLOR resolution: %dx%d", src->width, src->height);
   } else {
     GST_ERROR_OBJECT (src, "Expected at least one of the streams to be valid.");
     return GST_FLOW_ERROR;
@@ -525,8 +524,7 @@ openni2_read_GstBuffer (GstOpenni2Src * src, GstBuffer * buf)
   }
 
   /* Now we plug the data from ni2src->frame into buf */
-  GstMapInfo map;
-  gst_buffer_map (buf, &map, GST_MAP_WRITE);
+  gst_video_frame_map(src->video_frame, &(src->gst_info), buf, GST_MAP_WRITE);
 
   if (src->depth.isValid () && src->color.isValid () &&
       src->sourcetype == SOURCETYPE_BOTH) {
@@ -542,9 +540,10 @@ openni2_read_GstBuffer (GstOpenni2Src * src, GstBuffer * buf)
 			openni::OpenNI::getExtendedError ());
       return GST_FLOW_ERROR;
     }
-    memcpy(map.data, src->colorFrame.getData (), src->colorFrame.getDataSize());
+    memcpy(src->video_frame->data[0], src->colorFrame.getData (),
+        src->colorFrame.getDataSize());
     /* Add depth as 8bit alpha channel, depth is 16bit samples */
-    guint8* pData = map.data + src->colorFrame.getDataSize();
+    guint8* pData = (guint8*)src->video_frame->data[0] + src->colorFrame.getDataSize();
     guint16* pDepth = (guint16*) src->depthFrame.getData();
     for( int i=0; i < src->depthFrame.getDataSize()/2; ++i)
       pData[i] = pDepth[i] >> 8;
@@ -560,7 +559,8 @@ openni2_read_GstBuffer (GstOpenni2Src * src, GstBuffer * buf)
 			openni::OpenNI::getExtendedError ());
       return GST_FLOW_ERROR;
     }
-    memcpy(map.data, src->depthFrame.getData(), src->depthFrame.getDataSize());
+    memcpy(src->video_frame->data[0], src->depthFrame.getData(),
+        src->depthFrame.getDataSize());
     GST_BUFFER_PTS(buf) = src->depthFrame.getTimestamp() * 1000;
     GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
 			src->depthFrame.getWidth (),
@@ -574,7 +574,8 @@ openni2_read_GstBuffer (GstOpenni2Src * src, GstBuffer * buf)
 			openni::OpenNI::getExtendedError ());
       return GST_FLOW_ERROR;
     }
-    memcpy(map.data, src->colorFrame.getData(), src->colorFrame.getDataSize());
+    memcpy(src->video_frame->data[0], src->colorFrame.getData(),
+        src->colorFrame.getDataSize());
     GST_BUFFER_PTS(buf) = src->colorFrame.getTimestamp() * 1000;
     GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
 			src->colorFrame.getWidth (),
@@ -584,8 +585,8 @@ openni2_read_GstBuffer (GstOpenni2Src * src, GstBuffer * buf)
   }
 
   /* Is this safe or is a hack? */
-  gst_buffer_unmap (buf, &map);
-  gst_buffer_resize (buf, 0, map.size);
+  gst_video_frame_unmap (src->video_frame);
+  //gst_buffer_resize (buf, 0, map.size);
 
   return GST_FLOW_OK;
 }
