@@ -27,10 +27,10 @@
  * </programlisting>
  *
  * <programlisting>
-  LD_LIBRARY_PATH=/usr/lib/OpenNI2/Drivers/ gst-launch-1.0 --gst-debug=openni2src:5   openni2src location='~/Downloads/mr.oni' sourcetype=depth ! videoconvert ! ximagesink
+  LD_LIBRARY_PATH=/usr/lib/OpenNI2/Drivers/ gst-launch-1.0 --gst-debug=openni2src:5   openni2src location='Downloads/mr.oni' sourcetype=depth ! videoconvert ! ximagesink
  * </programlisting>
  * <programlisting>
-  LD_LIBRARY_PATH=/usr/lib/OpenNI2/Drivers/ gst-launch-1.0 --gst-debug=openni2src:5   openni2src location='~/Downloads/mr.oni' sourcetype=color ! videoconvert ! ximagesink
+  LD_LIBRARY_PATH=/usr/lib/OpenNI2/Drivers/ gst-launch-1.0 --gst-debug=openni2src:5   openni2src location='Downloads/mr.oni' sourcetype=color ! videoconvert ! ximagesink
  * </programlisting>
  * </para>
  * </refsect2>
@@ -80,7 +80,8 @@ gst_openni2_src_sourcetype_get_type (void)
     static const GEnumValue values[] = {
       {SOURCETYPE_DEPTH, "Get depth readings", "depth"},
       {SOURCETYPE_COLOR, "Get color readings", "color"},
-      {SOURCETYPE_BOTH, "Get color and depth (as alpha) readings", "both"},
+      {SOURCETYPE_BOTH, "Get color and depth (as alpha) readings - EXPERIMENTAL",
+       "both"},
       {0, NULL, NULL},
     };
     etype = g_enum_register_static ("GstOpenni2SrcSourcetype", values);
@@ -295,7 +296,7 @@ gst_openni2_src_stop (GstBaseSrc * bsrc)
   if (src->color.isValid ())
     src->color.stop();
 
-  free(src->video_frame);
+  //free(src->video_frame);
   return TRUE;
 }
 
