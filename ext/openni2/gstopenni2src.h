@@ -54,8 +54,7 @@ struct _GstOpenni2Src
   GstOpenni2State state;
   gchar *uri_name;
   gint sourcetype;
-  GstVideoInfo gst_info;
-  GstVideoFrame *video_frame;
+  GstCaps *gst_caps;
 
   /* OpenNI2 variables */
   openni::Device device;
