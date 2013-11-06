@@ -55,6 +55,7 @@ struct _GstOpenni2Src
   gchar *uri_name;
   gint sourcetype;
   GstCaps *gst_caps;
+  GMutex lock;
 
   /* OpenNI2 variables */
   openni::Device device;

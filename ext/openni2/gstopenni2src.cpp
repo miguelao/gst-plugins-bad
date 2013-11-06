@@ -69,7 +69,7 @@ typedef enum
 } GstOpenni2SourceType;
 #define DEFAULT_SOURCETYPE  SOURCETYPE_DEPTH
 
-#define SAMPLE_READ_WAIT_TIMEOUT 2000   //2000ms
+#define SAMPLE_READ_WAIT_TIMEOUT 2000   /* 2000ms */
 
 #define GST_TYPE_OPENNI2_SRC_SOURCETYPE (gst_openni2_src_sourcetype_get_type ())
 static GType
@@ -101,7 +101,6 @@ static void gst_openni2_src_get_property (GObject * object, guint prop_id,
 static gboolean gst_openni2_src_start (GstBaseSrc * bsrc);
 static gboolean gst_openni2_src_stop (GstBaseSrc * bsrc);
 static GstCaps *gst_openni2_src_get_caps (GstBaseSrc * src, GstCaps * filter);
-//static gboolean gst_openni2_src_query (GstBaseSrc * bsrc, GstQuery * query);
 
 /* element methods */
 static GstStateChangeReturn gst_openni2_src_change_state (GstElement * element,
@@ -154,7 +153,6 @@ gst_openni2_src_class_init (GstOpenni2SrcClass * klass)
   basesrc_class->start = GST_DEBUG_FUNCPTR (gst_openni2_src_start);
   basesrc_class->stop = GST_DEBUG_FUNCPTR (gst_openni2_src_stop);
   basesrc_class->get_caps = GST_DEBUG_FUNCPTR (gst_openni2_src_get_caps);
-  //basesrc_class->query = GST_DEBUG_FUNCPTR (gst_openni2_src_query);
 
   gst_element_class_add_pad_template (element_class,
       gst_static_pad_template_get (&srctemplate));
@@ -179,6 +177,7 @@ static void
 gst_openni2_src_init (GstOpenni2Src * ni2src)
 {
   gst_base_src_set_format (GST_BASE_SRC (ni2src), GST_FORMAT_BYTES);
+  g_mutex_init (&ni2src->lock);
 }
 
 static void
@@ -306,8 +305,12 @@ gst_openni2_src_get_caps (GstBaseSrc * src, GstCaps * filter)
   GstOpenni2Src *ni2src;
   GstCaps *ret;
   ni2src = GST_OPENNI2_SRC (src);
-  if (ni2src->gst_caps)
-    return gst_caps_ref (ni2src->gst_caps);
+  g_mutex_lock (&ni2src->lock);
+  if (ni2src->gst_caps){
+    ret = gst_caps_ref (ni2src->gst_caps);
+    g_mutex_unlock(&ni2src->lock);
+    return ret;
+  }
 
   if (ni2src->colorpixfmt != openni::PIXEL_FORMAT_RGB888){
     /* Uh oh,  not RGB :?  */
@@ -343,6 +346,7 @@ gst_openni2_src_get_caps (GstBaseSrc * src, GstCaps * filter)
   }
   GST_INFO_OBJECT (ni2src, "probed caps: %" GST_PTR_FORMAT, ret);
   ni2src->gst_caps = gst_caps_ref(ret);
+  g_mutex_unlock(&ni2src->lock);
   return ret;
 }
 
@@ -530,10 +534,7 @@ openni2_read_gstbuffer (GstOpenni2Src * src, GstBuffer * buf)
     return GST_FLOW_ERROR;
   }
 
-  /* Now we plug the data from ni2src->frame into buf */
-  GstMemory* ni2src_buffer_as_gst_memory; 
-  guint8 *data;
-
+  GstMapInfo info;
   if (src->depth.isValid () && src->color.isValid () &&
       src->sourcetype == SOURCETYPE_BOTH) {
     rc = src->depth.readFrame (&src->depthFrame);
@@ -550,13 +551,12 @@ openni2_read_gstbuffer (GstOpenni2Src * src, GstBuffer * buf)
     }
 
     int framesize = src->colorFrame.getDataSize() + src->depthFrame.getDataSize()/2;
-    data = (guint8*) g_malloc(framesize);
-    ni2src_buffer_as_gst_memory = gst_memory_new_wrapped(GST_MEMORY_FLAG_READONLY,
-        data, framesize, 0, framesize, data, g_free);
+    buf = gst_buffer_new_and_alloc(framesize);
     /* Copy colour information */
-    memcpy(data, src->colorFrame.getData(), src->colorFrame.getDataSize());
-    guint8* pData = data + src->colorFrame.getDataSize();
-    /* Add depth as 8bit alpha channel, depth is 16bit samples */
+    gst_buffer_map(buf, &info, (GstMapFlags)(GST_MAP_READ | GST_MAP_WRITE));
+    memcpy(info.data, src->colorFrame.getData(), src->colorFrame.getDataSize());
+    guint8* pData = info.data + src->colorFrame.getDataSize();
+    /* Add depth as 8bit alpha channel, depth is 16bit samples. */
     guint16* pDepth = (guint16*) src->depthFrame.getData();
     for( int i=0; i < src->depthFrame.getDataSize()/2; ++i)
       pData[i] = pDepth[i] >> 8;
@@ -564,7 +564,7 @@ openni2_read_gstbuffer (GstOpenni2Src * src, GstBuffer * buf)
       src->colorFrame.getDataSize(),
       src->depthFrame.getDataSize (),
       (long long) src->depthFrame.getTimestamp ());
-
+    gst_buffer_unmap(buf, &info);
   } else if (src->depth.isValid () && src->sourcetype == SOURCETYPE_DEPTH) {
     rc = src->depth.readFrame (&src->depthFrame);
     if (rc != openni::STATUS_OK) {
@@ -574,16 +574,16 @@ openni2_read_gstbuffer (GstOpenni2Src * src, GstBuffer * buf)
     }
 
     int framesize = src->depthFrame.getDataSize();
-    data = (guint8*) g_malloc(framesize);
-    ni2src_buffer_as_gst_memory = gst_memory_new_wrapped(GST_MEMORY_FLAG_READONLY,
-        data, framesize, 0, framesize, data, g_free);
-    memcpy(data, src->depthFrame.getData(), src->depthFrame.getDataSize());
+    buf = gst_buffer_new_and_alloc(framesize);
+    gst_buffer_map(buf, &info, (GstMapFlags)(GST_MAP_READ | GST_MAP_WRITE));
+    memcpy(info.data, src->depthFrame.getData(), framesize);
     GST_BUFFER_PTS(buf) = src->depthFrame.getTimestamp() * 1000;
     GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
       src->depthFrame.getWidth (),
       src->depthFrame.getHeight (),
       src->depthFrame.getDataSize (),
       (long long) src->depthFrame.getTimestamp ());
+    gst_buffer_unmap(buf, &info);
   } else if (src->color.isValid () && src->sourcetype == SOURCETYPE_COLOR) {
     rc = src->color.readFrame (&src->colorFrame);
     if (rc != openni::STATUS_OK) {
@@ -592,20 +592,17 @@ openni2_read_gstbuffer (GstOpenni2Src * src, GstBuffer * buf)
       return GST_FLOW_ERROR;
     }
     int framesize = src->colorFrame.getDataSize();
-    data = (guint8*) g_malloc(framesize);
-    ni2src_buffer_as_gst_memory = gst_memory_new_wrapped(GST_MEMORY_FLAG_READONLY,
-        data, framesize, 0, framesize, data, g_free);
-    memcpy(data, src->depthFrame.getData(), src->depthFrame.getDataSize());
+    buf = gst_buffer_new_and_alloc(framesize);
+    gst_buffer_map(buf, &info, (GstMapFlags)(GST_MAP_READ | GST_MAP_WRITE));
+    memcpy(info.data, src->depthFrame.getData(), framesize);
     GST_BUFFER_PTS(buf) = src->colorFrame.getTimestamp() * 1000;
     GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
       src->colorFrame.getWidth (),
       src->colorFrame.getHeight (),
       src->colorFrame.getDataSize (),
       (long long) src->colorFrame.getTimestamp ());
+    gst_buffer_unmap(buf, &info);
   }
-
-  gst_buffer_insert_memory(buf, 0, ni2src_buffer_as_gst_memory);
-
   return GST_FLOW_OK;
 }
 
