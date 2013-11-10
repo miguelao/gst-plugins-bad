@@ -177,7 +177,6 @@ static void
 gst_openni2_src_init (GstOpenni2Src * ni2src)
 {
   gst_base_src_set_format (GST_BASE_SRC (ni2src), GST_FORMAT_BYTES);
-  g_mutex_init (&ni2src->lock);
 }
 
 static void
@@ -200,6 +199,9 @@ gst_openni2_src_finalize (GObject * gobject)
     g_free (ni2src->uri_name);
     ni2src->uri_name = NULL;
   }
+  if (ni2src->gst_caps)
+    gst_caps_unref(ni2src->gst_caps);
+  ni2src->gst_caps = NULL;
 
   G_OBJECT_CLASS (parent_class)->finalize (gobject);
 }
@@ -303,51 +305,53 @@ static GstCaps *
 gst_openni2_src_get_caps (GstBaseSrc * src, GstCaps * filter)
 {
   GstOpenni2Src *ni2src;
-  GstCaps *ret;
+  GstCaps *caps;
   ni2src = GST_OPENNI2_SRC (src);
-  g_mutex_lock (&ni2src->lock);
-  if (ni2src->gst_caps){
-    ret = gst_caps_ref (ni2src->gst_caps);
-    g_mutex_unlock(&ni2src->lock);
-    return ret;
+  GST_OBJECT_LOCK (ni2src);
+  if (ni2src->gst_caps) {
+    GST_OBJECT_UNLOCK (ni2src);
+    return (filter) 
+        ? gst_caps_intersect_full (filter, ni2src->gst_caps, GST_CAPS_INTERSECT_FIRST) 
+        : gst_caps_ref (ni2src->gst_caps);
   }
 
-  if (ni2src->colorpixfmt != openni::PIXEL_FORMAT_RGB888){
-    /* Uh oh,  not RGB :?  */
-    return gst_caps_new_empty();
-  }
-  ret = gst_caps_new_empty();
+  // If we are here, we need to compose the caps and return them.
+  caps = gst_caps_new_empty();
+  if (ni2src->colorpixfmt != openni::PIXEL_FORMAT_RGB888)
+    return caps; /* Uh oh,  not RGB :? Not supported. */
 
   if (ni2src->depth.isValid () && ni2src->color.isValid () &&
-      ni2src->sourcetype == SOURCETYPE_BOTH){
-    ret = gst_caps_new_simple ("video/x-raw",
-             "format", G_TYPE_STRING, "RGBA",
-             "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
-             "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
-             "width", G_TYPE_INT, ni2src->width,
-             "height", G_TYPE_INT, ni2src->height,
-             NULL);
-  } else if (ni2src->depth.isValid () && ni2src->sourcetype == SOURCETYPE_DEPTH){
-    ret = gst_caps_new_simple ("video/x-raw",
-             "format", G_TYPE_STRING, "GRAY16_LE",
-             "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
-             "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
-             "width", G_TYPE_INT, ni2src->width,
-             "height", G_TYPE_INT, ni2src->height,
-             NULL);
-  } else if (ni2src->color.isValid () && ni2src->sourcetype == SOURCETYPE_COLOR){
-    ret = gst_caps_new_simple ("video/x-raw",
-             "format", G_TYPE_STRING, "RGB",
-             "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
-             "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
-             "width", G_TYPE_INT, ni2src->width,
-             "height", G_TYPE_INT, ni2src->height,
-             NULL);
+      ni2src->sourcetype == SOURCETYPE_BOTH) {
+    caps = gst_caps_new_simple ("video/x-raw",
+        "format", G_TYPE_STRING, "RGBA",
+        "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
+        "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+        "width", G_TYPE_INT, ni2src->width,
+        "height", G_TYPE_INT, ni2src->height,
+        NULL);
+  } else if (ni2src->depth.isValid () && ni2src->sourcetype == SOURCETYPE_DEPTH) {
+    caps = gst_caps_new_simple ("video/x-raw",
+        "format", G_TYPE_STRING, "GRAY16_LE",
+        "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
+        "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+        "width", G_TYPE_INT, ni2src->width,
+        "height", G_TYPE_INT, ni2src->height,
+        NULL);
+  } else if (ni2src->color.isValid () && ni2src->sourcetype == SOURCETYPE_COLOR) {
+    caps = gst_caps_new_simple ("video/x-raw",
+        "format", G_TYPE_STRING, "RGB",
+        "framerate", GST_TYPE_FRACTION, ni2src->fps, 1,
+        "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+        "width", G_TYPE_INT, ni2src->width,
+        "height", G_TYPE_INT, ni2src->height,
+        NULL);
   }
-  GST_INFO_OBJECT (ni2src, "probed caps: %" GST_PTR_FORMAT, ret);
-  ni2src->gst_caps = gst_caps_ref(ret);
-  g_mutex_unlock(&ni2src->lock);
-  return ret;
+  GST_INFO_OBJECT (ni2src, "probed caps: %" GST_PTR_FORMAT, caps);
+  ni2src->gst_caps = gst_caps_ref(caps);
+  GST_OBJECT_UNLOCK (ni2src);
+  return (filter) 
+      ? gst_caps_intersect_full (filter, ni2src->gst_caps, GST_CAPS_INTERSECT_FIRST) 
+      : gst_caps_ref (ni2src->gst_caps);
 }
 
 static GstStateChangeReturn
@@ -524,7 +528,7 @@ openni2_read_gstbuffer (GstOpenni2Src * src, GstBuffer * buf)
   openni::Status rc = openni::STATUS_OK;
   openni::VideoStream * pStream = &(src->depth);
   int changedStreamDummy;
-
+  
   /* Block until we get some data */
   rc = openni::OpenNI::waitForAnyStream (&pStream, 1, &changedStreamDummy,
                                          SAMPLE_READ_WAIT_TIMEOUT);
@@ -549,11 +553,17 @@ openni2_read_gstbuffer (GstOpenni2Src * src, GstBuffer * buf)
       openni::OpenNI::getExtendedError ());
       return GST_FLOW_ERROR;
     }
+    if ((src->colorFrame.getStrideInBytes() != src->colorFrame.getWidth()) ||
+        (src->depthFrame.getStrideInBytes() != 2*src->depthFrame.getWidth())) {
+      // This case is not handled - yet :B
+      GST_ERROR_OBJECT(src, "Stride does not coincide with width");
+      return GST_FLOW_ERROR;
+    }
 
     int framesize = src->colorFrame.getDataSize() + src->depthFrame.getDataSize()/2;
     buf = gst_buffer_new_and_alloc(framesize);
     /* Copy colour information */
-    gst_buffer_map(buf, &info, (GstMapFlags)(GST_MAP_READ | GST_MAP_WRITE));
+    gst_buffer_map(buf, &info, (GstMapFlags)(GST_MAP_WRITE));
     memcpy(info.data, src->colorFrame.getData(), src->colorFrame.getDataSize());
     guint8* pData = info.data + src->colorFrame.getDataSize();
     /* Add depth as 8bit alpha channel, depth is 16bit samples. */
@@ -572,10 +582,15 @@ openni2_read_gstbuffer (GstOpenni2Src * src, GstBuffer * buf)
       openni::OpenNI::getExtendedError ());
       return GST_FLOW_ERROR;
     }
+    if (src->depthFrame.getStrideInBytes() != 2*src->depthFrame.getWidth()) {
+      // This case is not handled - yet :B
+      GST_ERROR_OBJECT(src, "Stride does not coincide with width");
+      return GST_FLOW_ERROR;
+    }
 
     int framesize = src->depthFrame.getDataSize();
     buf = gst_buffer_new_and_alloc(framesize);
-    gst_buffer_map(buf, &info, (GstMapFlags)(GST_MAP_READ | GST_MAP_WRITE));
+    gst_buffer_map(buf, &info, (GstMapFlags)(GST_MAP_WRITE));
     memcpy(info.data, src->depthFrame.getData(), framesize);
     GST_BUFFER_PTS(buf) = src->depthFrame.getTimestamp() * 1000;
     GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
@@ -591,9 +606,14 @@ openni2_read_gstbuffer (GstOpenni2Src * src, GstBuffer * buf)
       openni::OpenNI::getExtendedError ());
       return GST_FLOW_ERROR;
     }
+    if (src->colorFrame.getStrideInBytes() != src->colorFrame.getWidth()) {
+      // This case is not handled - yet :B
+      GST_ERROR_OBJECT(src, "Stride does not coincide with width");
+      return GST_FLOW_ERROR;
+    }
     int framesize = src->colorFrame.getDataSize();
     buf = gst_buffer_new_and_alloc(framesize);
-    gst_buffer_map(buf, &info, (GstMapFlags)(GST_MAP_READ | GST_MAP_WRITE));
+    gst_buffer_map(buf, &info, (GstMapFlags)(GST_MAP_WRITE));
     memcpy(info.data, src->depthFrame.getData(), framesize);
     GST_BUFFER_PTS(buf) = src->colorFrame.getTimestamp() * 1000;
     GST_WARNING_OBJECT (src, "sending buffer (%dx%d)=%dB [%08llu]",
