@@ -51,8 +51,8 @@ dnl sets GST_LT_LDFLAGS
 AS_LIBTOOL(GST, 300, 0, 300)
 
 dnl *** required versions of GStreamer stuff ***
-GST_REQ=1.3.0.1
-GSTPB_REQ=1.3.0.1
+GST_REQ=1.1.0.1
+GSTPB_REQ=1.1.0.1
 
 dnl *** autotools stuff ****
 

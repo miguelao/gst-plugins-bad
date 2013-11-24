@@ -1,7 +1,7 @@
 plugin_LTLIBRARIES = libgstopencv.la
 
 # sources used to compile this plug-in
-libgstopencv_la_SOURCES = gstopencv.c \
+libgstopencv_la_SOURCES = gstopencv.cpp \
 			gstopencvvideofilter.c \
 			gstopencvutils.c \
 			gstcvdilate.c \
@@ -24,6 +24,7 @@ libgstopencv_la_SOURCES = gstopencv.c \
 			gstsegmentation.cpp \
 			gstgrabcut.cpp \
 			gstdisparity.cpp \
+			gstpanography.cpp \
 			motioncells_wrapper.cpp \
 			MotionCells.cpp
 
@@ -67,6 +68,7 @@ noinst_HEADERS = gstopencvvideofilter.h gstopencvutils.h \
 		gstsegmentation.h \
 		gstgrabcut.h \
 		gstdisparity.h \
+		gstpanography.h \
 		gstmotioncells.h \
 		motioncells_wrapper.h \
 		MotionCells.h

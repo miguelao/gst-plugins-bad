@@ -34,7 +34,7 @@
 #include "gstfacedetect.h"
 #include "gstmotioncells.h"
 #include "gstpyramidsegment.h"
-#include "gsttemplatematch.h"
+//#include "gsttemplatematch.h"
 #include "gsttextoverlay.h"
 #include "gsthanddetect.h"
 #include "gstskindetect.h"
@@ -42,6 +42,7 @@
 #include "gstsegmentation.h"
 #include "gstgrabcut.h"
 #include "gstdisparity.h"
+#include "gstpanography.h"
 
 static gboolean
 plugin_init (GstPlugin * plugin)
@@ -79,8 +80,8 @@ plugin_init (GstPlugin * plugin)
   if (!gst_pyramid_segment_plugin_init (plugin))
     return FALSE;
 
-  if (!gst_template_match_plugin_init (plugin))
-    return FALSE;
+  //if (!gst_template_match_plugin_init (plugin))
+  //  return FALSE;
 
   if (!gst_opencv_text_overlay_plugin_init (plugin))
     return FALSE;
@@ -101,6 +102,9 @@ plugin_init (GstPlugin * plugin)
     return FALSE;
 
   if (!gst_disparity_plugin_init (plugin))
+    return FALSE;
+
+  if (!gst_panography_plugin_init (plugin))
     return FALSE;
 
   return TRUE;
