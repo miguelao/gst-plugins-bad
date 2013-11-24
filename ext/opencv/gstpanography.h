@@ -83,8 +83,8 @@ struct _GstPanography
   gboolean flushing;
 
   CvSize imgSize;
-  cv::Mat* cvRGB_right;
-  cv::Mat* cvRGB_left;
+  IplImage* cvRGB_r;
+  IplImage* cvRGB_l;
   cv::Mat* cvGray_right;
   cv::Mat* cvGray_left;
 

@@ -428,8 +428,8 @@ gst_panography_chain_left (GstPad * pad, GstObject * parent, GstBuffer * buffer)
   if (!gst_buffer_map (buffer, &info, (GstMapFlags) GST_MAP_READWRITE)) {
     return GST_FLOW_ERROR;
   }
-  if (fs->cvRGB_left)
-    fs->cvRGB_left->data = (uchar *) info.data;
+  if (fs->cvRGB_l)
+    fs->cvRGB_l->imageData = (char *) info.data;
 
   GST_DEBUG_OBJECT (pad, "signalled right");
   g_cond_signal (&fs->cond);
@@ -465,8 +465,8 @@ gst_panography_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer
     g_mutex_unlock (&fs->lock);
     return GST_FLOW_ERROR;
   }
-  if (fs->cvRGB_right)
-    fs->cvRGB_right->data = (uchar *) info.data;
+  if (fs->cvRGB_r)
+    fs->cvRGB_r->imageData = (char *) info.data;
 
   /* Here do the business */
   GST_INFO_OBJECT (pad,
@@ -474,8 +474,10 @@ gst_panography_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer
       fs->width, fs->height, fs->actualChannels);
 
   if (METHOD_SURF == fs->method) {
-    cv::cvtColor(*fs->cvRGB_left, *fs->cvGray_left, CV_RGB2GRAY);
-    cv::cvtColor(*fs->cvRGB_right, *fs->cvGray_right, CV_RGB2GRAY);
+    cv::Mat mat_l(fs->cvRGB_l, true);
+    cv::cvtColor(mat_l, *fs->cvGray_left, CV_RGB2GRAY);
+    cv::Mat mat_r(fs->cvRGB_r, true);
+    cv::cvtColor(mat_r, *fs->cvGray_right, CV_RGB2GRAY);
 
     /* Detect keypoints */
     cv::SurfFeatureDetector surf(400);
@@ -512,10 +514,12 @@ gst_panography_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer
       }
     }
 
-    good_matches.erase(good_matches.begin()+10, good_matches.end());
 
-    bool draw_matches = true;
+    bool draw_matches = false;
     if (draw_matches) {
+      // Limit to 10 good matches.
+      good_matches.erase(good_matches.begin()+10, good_matches.end());
+
       cv::Mat img_matches;
       drawMatches(*fs->cvGray_left, fs->keypoints1,
                   *fs->cvGray_right, fs->keypoints2,
@@ -523,10 +527,12 @@ gst_panography_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer
                   cv::Scalar::all(-1),
                   cv::Scalar::all(-1),
                   std::vector<char>(),
-                  cv::DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS );
-
+                  cv::DrawMatchesFlags::DEFAULT);
       GST_INFO_OBJECT(pad, "(%dx%d)", img_matches.cols, img_matches.rows );
-      cv::resize(img_matches, *fs->cvRGB_right, cv::Size(0,0), 0.5, 1);
+      cv::resize(img_matches, mat_r, mat_r.size(), 0, 0);
+
+      memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
+
     } else {
       std::vector<cv::Point2f> obj;
       std::vector<cv::Point2f> scene;
@@ -543,10 +549,13 @@ gst_panography_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer
                       result,
                       H,
                       cv::Size(2*fs->width, 2*fs->height));
-      //cv::Mat half(result,cv::Rect(0, 0, fs->width, fs->height));
-      //fs->cvGray_right->copyTo(half);
+      cv::Mat half(result,cv::Rect(0, 0, fs->width, fs->height));
+      fs->cvGray_right->copyTo(half);
+
       cv::resize(result, *fs->cvGray_right, fs->cvGray_right->size());
-      cv::cvtColor(*fs->cvGray_right, *fs->cvRGB_right, CV_GRAY2RGB);
+      cv::cvtColor(*fs->cvGray_right, mat_r, CV_GRAY2RGB);
+
+      memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
     }
 
   }
@@ -583,25 +592,24 @@ initialise_panography (GstPanography * fs, int width, int height, int nchannels)
   fs->actualChannels = nchannels;
 
   fs->imgSize = cvSize (fs->width, fs->height);
-  if (fs->cvRGB_right)
+  if (fs->cvRGB_r)
     gst_panography_release_all_pointers (fs);
 
-  fs->cvRGB_right  = new cv::Mat(fs->height, fs->width, CV_8UC3, NULL, fs->width);
-  fs->cvRGB_left   = new cv::Mat(fs->height, fs->width, CV_8UC3, NULL, fs->width);
+  fs->cvRGB_r = cvCreateImageHeader (fs->imgSize, IPL_DEPTH_8U, fs->actualChannels);
+  fs->cvRGB_l = cvCreateImageHeader (fs->imgSize, IPL_DEPTH_8U, fs->actualChannels);
   fs->cvGray_right = new cv::Mat(fs->height, fs->width, CV_8UC1);
   fs->cvGray_left  = new cv::Mat(fs->height, fs->width, CV_8UC1);
 
   /* SURF method. */
-  if ((NULL != fs->cvRGB_right) && (NULL != fs->cvRGB_left))
+  if ((NULL != fs->cvRGB_r) && (NULL != fs->cvRGB_l))
     fs->surf = new cv::SurfFeatureDetector(400);
 }
 
 static void
 gst_panography_release_all_pointers (GstPanography * filter)
 {
-  delete filter->cvRGB_right;
-  delete filter->cvRGB_left;
-  delete filter->cvGray_right;
+  cvReleaseImage (&filter->cvRGB_r);
+  cvReleaseImage (&filter->cvRGB_l);
   delete filter->cvGray_left;
 
   delete filter->surf;
