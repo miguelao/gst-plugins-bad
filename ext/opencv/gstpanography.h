@@ -82,15 +82,22 @@ struct _GstPanography
   GCond cond;
   gboolean flushing;
 
+  long num_frame;
+
   CvSize imgSize;
   IplImage* cvRGB_r;
   IplImage* cvRGB_l;
   cv::Mat* cvGray_right;
   cv::Mat* cvGray_left;
 
-  cv::SurfFeatureDetector *surf;
-  cv::vector<cv::KeyPoint> keypoints1, keypoints2;
+  cv::Ptr<cv::FeatureDetector> detector;
+  cv::Ptr<cv::DescriptorExtractor> extractor;
+  cv::Ptr<cv::DescriptorMatcher> matcher;
 
+  cv::vector<cv::KeyPoint> keypoints1, keypoints2;
+  cv::Ptr<cv::Mat> descriptors1, descriptors2;
+  cv::vector<cv::DMatch> matches;
+  std::vector<cv::DMatch> good_matches;
 };
 
 struct _GstPanographyClass

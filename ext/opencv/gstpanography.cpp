@@ -53,17 +53,11 @@
  * <refsect2>
  * <title>Example launch line</title>
  * |[
- * gst-launch-1.0       videotestsrc ! video/x-raw,width=320,height=240 ! disp0.sink_right      videotestsrc ! video/x-raw,width=320,height=240 ! disp0.sink_left      panography name=disp0 ! videoconvert ! ximagesink
+gst-launch-1.0    multifilesrc  location=~/im3.png ! pngdec ! videoconvert  ! pano0.sink_right     multifilesrc  location=~/im4.png ! pngdec ! videoconvert ! pano0.sink_left panography   name=pano0 method=surf    pano0.src ! videoconvert ! ximagesink
  * ]|
- * Another example, with two png files representing a classical stereo matching,
- * downloadable from http://vision.middlebury.edu/stereo/submit/tsukuba/im4.png and
- * im3.png. Note here they are downloaded in ~ (home).
+ * Yet another example with two cameras:
  * |[
-gst-launch-1.0    multifilesrc  location=~/im3.png ! pngdec ! videoconvert  ! disp0.sink_right     multifilesrc  location=~/im4.png ! pngdec ! videoconvert ! disp0.sink_left panography   name=disp0 method=sbm     disp0.src ! videoconvert ! ximagesink
- * ]|
- * Yet another example with two cameras, which should be the same model, aligned etc.
- * |[
- gst-launch-1.0    v4l2src device=/dev/video1 ! video/x-raw,width=320,height=240 ! videoconvert  ! disp0.sink_right     v4l2src device=/dev/video0 ! video/x-raw,width=320,height=240 ! videoconvert ! disp0.sink_left panography   name=disp0 method=sgbm     disp0.src ! videoconvert ! ximagesink
+gst-launch-1.0  --gst-debug=2   v4l2src device=/dev/video2 ! videoconvert  ! video/x-raw,format=I420,width=640,height=480 ! videoconvert ! pano0.sink_right     v4l2src device=/dev/video3 ! videoconvert ! video/x-raw,format=I420,width=640,height=480 ! videoconvert ! pano0.sink_left panography   name=pano0 method=surf     pano0.src ! videoconvert ! ximagesink
  * ]|
  * </refsect2>
  */
@@ -95,6 +89,7 @@ enum
 
 typedef enum
 {
+  METHOD_FAST,
   METHOD_SURF
 } GstPanographyMethod;
 
@@ -107,7 +102,8 @@ gst_panography_method_get_type (void)
   static GType etype = 0;
   if (etype == 0) {
     static const GEnumValue values[] = {
-      {METHOD_SURF, "SURF", "surf"},
+      {METHOD_FAST, "FAST detector, SURF descriptors, Flann matcher", "fast"},
+      {METHOD_SURF, "SURF detector, SURF descriptors, Flann matcher", "surf"},
       {0, NULL, NULL},
     };
     etype = g_enum_register_static ("GstPanographyMethod", values);
@@ -473,91 +469,87 @@ gst_panography_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer
       "stitching frames, %dB (%dx%d) %d ch.", (int) info.size,
       fs->width, fs->height, fs->actualChannels);
 
-  if (METHOD_SURF == fs->method) {
-    cv::Mat mat_l(fs->cvRGB_l, true);
-    cv::cvtColor(mat_l, *fs->cvGray_left, CV_RGB2GRAY);
-    cv::Mat mat_r(fs->cvRGB_r, true);
-    cv::cvtColor(mat_r, *fs->cvGray_right, CV_RGB2GRAY);
+  cv::Mat mat_l(fs->cvRGB_l, true);
+  cv::cvtColor(mat_l, *fs->cvGray_left, CV_RGB2GRAY);
+  cv::Mat mat_r(fs->cvRGB_r, true);
+  cv::cvtColor(mat_r, *fs->cvGray_right, CV_RGB2GRAY);
 
-    /* Detect keypoints */
-    cv::SurfFeatureDetector surf(400);
+    // Detect keypoints. This is comparatively slower than the rest.
+  if ((fs->num_frame++ % 4) == 0) {
     fs->keypoints1.clear();
-    surf.detect(*fs->cvGray_left, fs->keypoints1);
+    fs->detector->detect(*fs->cvGray_left, fs->keypoints1);
     fs->keypoints2.clear();
-    surf.detect(*fs->cvGray_right, fs->keypoints2);
+    fs->detector->detect(*fs->cvGray_right, fs->keypoints2);
 
     // Now let's compute the descriptors.
-    cv::SurfDescriptorExtractor extractor;
-    cv::Mat descriptors1, descriptors2;
-    extractor.compute(*fs->cvGray_left, fs->keypoints1, descriptors1);
-    extractor.compute(*fs->cvGray_right, fs->keypoints2, descriptors2);
+    fs->descriptors1 = new cv::Mat();
+    fs->extractor->compute(*fs->cvGray_left, fs->keypoints1, *fs->descriptors1);
+    fs->descriptors2 = new cv::Mat();
+    fs->extractor->compute(*fs->cvGray_right, fs->keypoints2, *fs->descriptors2);
 
     // Let's match the descriptors.
-    cv::FlannBasedMatcher matcher;
-    cv::vector<cv::DMatch> matches;
-    matcher.match(descriptors1, descriptors2, matches);
+    fs->matches.clear();
+    fs->matcher->match(*fs->descriptors1, *fs->descriptors2, fs->matches);
+  }
 
-    // Quick calculation of max and min distances between keypoints
-    double max_dist = 0; double min_dist = 100;
-    for( int i = 0; i < descriptors1.rows; i++ ) {
-      double dist = matches[i].distance;
-      if( dist < min_dist ) min_dist = dist;
-      if( dist > max_dist ) max_dist = dist;
+  // Quick calculation of max and min distances between keypoints
+  double max_dist = 0; double min_dist = 100;
+  for( int i = 0; i < fs->descriptors1->rows; i++ ) {
+    double dist = fs->matches[i].distance;
+    if( dist < min_dist ) min_dist = dist;
+    if( dist > max_dist ) max_dist = dist;
+  }
+  GST_INFO_OBJECT(pad, "Max dist : %f, Min dist :%f", max_dist, min_dist );
+
+  // Use only "good" matches (i.e. whose distance is less than 3*min_dist )
+  cv::vector<cv::DMatch> new_good_matches;
+  for( int i = 0; i < fs->descriptors1->rows; i++ ) {
+    if( fs->matches[i].distance < 2*min_dist ) {
+      new_good_matches.push_back(fs->matches[i]);
     }
-    GST_INFO_OBJECT(pad, "Max dist : %f, Min dist :%f", max_dist, min_dist );
-
-    // Use only "good" matches (i.e. whose distance is less than 3*min_dist )
-    std::vector<cv::DMatch> good_matches;
-    for( int i = 0; i < descriptors1.rows; i++ ) {
-      if( matches[i].distance < 3*min_dist ) {
-        good_matches.push_back( matches[i]);
-      }
-    }
+  }
+  if (new_good_matches.size() > 10) fs->good_matches = new_good_matches;
 
 
-    bool draw_matches = false;
-    if (draw_matches) {
-      // Limit to 10 good matches.
-      good_matches.erase(good_matches.begin()+10, good_matches.end());
+  bool draw_matches = false;
+  if (draw_matches && (fs->good_matches.size() > 10)) {
+    // Limit to 40 good matches.
+    fs->good_matches.erase(fs->good_matches.begin()+40, fs->good_matches.end());
 
-      cv::Mat img_matches;
-      drawMatches(*fs->cvGray_left, fs->keypoints1,
-                  *fs->cvGray_right, fs->keypoints2,
-                  good_matches, img_matches,
-                  cv::Scalar::all(-1),
-                  cv::Scalar::all(-1),
-                  std::vector<char>(),
-                  cv::DrawMatchesFlags::DEFAULT);
-      GST_INFO_OBJECT(pad, "(%dx%d)", img_matches.cols, img_matches.rows );
-      cv::resize(img_matches, mat_r, mat_r.size(), 0, 0);
+    cv::Mat img_matches;
+    drawMatches(*fs->cvGray_left, fs->keypoints1,
+                *fs->cvGray_right, fs->keypoints2,
+                fs->good_matches, img_matches,
+                cv::Scalar::all(-1),
+                cv::Scalar::all(-1),
+                std::vector<char>(),
+                cv::DrawMatchesFlags::DEFAULT);
+    GST_INFO_OBJECT(pad, "(%dx%d)", img_matches.cols, img_matches.rows );
+    cv::resize(img_matches, mat_r, mat_r.size(), 0, 0);
+    memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
 
-      memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
-
-    } else {
-      std::vector<cv::Point2f> obj;
-      std::vector<cv::Point2f> scene;
-      for( uint i = 0; i < good_matches.size(); i++ ) {
-        obj.push_back(fs->keypoints1[good_matches[i].queryIdx].pt);
-        scene.push_back(fs->keypoints2[good_matches[i].trainIdx].pt);
-      }
-
-         // Find the Homography Matrix
-      cv::Mat H = findHomography(obj, scene, CV_RANSAC);
-      // Use the Homography Matrix to warp the images
-      cv::Mat result;
-      warpPerspective(*fs->cvGray_left,
-                      result,
-                      H,
-                      cv::Size(2*fs->width, 2*fs->height));
-      cv::Mat half(result,cv::Rect(0, 0, fs->width, fs->height));
-      fs->cvGray_right->copyTo(half);
-
-      cv::resize(result, *fs->cvGray_right, fs->cvGray_right->size());
-      cv::cvtColor(*fs->cvGray_right, mat_r, CV_GRAY2RGB);
-
-      memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
+  }
+  else {
+    std::vector<cv::Point2f> obj;
+    std::vector<cv::Point2f> scene;
+    for( uint i = 0; i < fs->good_matches.size(); i++ ) {
+      obj.push_back(fs->keypoints1[fs->good_matches[i].queryIdx].pt);
+      scene.push_back(fs->keypoints2[fs->good_matches[i].trainIdx].pt);
     }
 
+    // Find the Homography Matrix
+    cv::Mat H = findHomography(obj, scene, CV_RANSAC);
+    // Use the Homography Matrix to warp the images
+    cv::Mat result;
+    warpPerspective(mat_l,
+                    result,
+                    H,
+                    cv::Size(2*fs->width, 2*fs->height));
+    cv::Mat half(result,cv::Rect(0, 0, fs->width, fs->height));
+    mat_r.copyTo(half);
+
+    cv::resize(result, mat_r, fs->cvGray_right->size());
+    memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
   }
 
   GST_DEBUG_OBJECT (pad, " right has finished");
@@ -601,8 +593,19 @@ initialise_panography (GstPanography * fs, int width, int height, int nchannels)
   fs->cvGray_left  = new cv::Mat(fs->height, fs->width, CV_8UC1);
 
   /* SURF method. */
-  if ((NULL != fs->cvRGB_r) && (NULL != fs->cvRGB_l))
-    fs->surf = new cv::SurfFeatureDetector(400);
+  if ((NULL != fs->cvRGB_r) && (NULL != fs->cvRGB_l)) {
+    if (METHOD_SURF == fs->method) {
+      fs->detector = cv::FeatureDetector::create("SURF");
+      fs->extractor = cv::DescriptorExtractor::create("SURF");
+      fs->matcher = cv::DescriptorMatcher::create("FlannBased");
+    } else if (METHOD_FAST == fs->method) {
+      fs->detector = cv::FeatureDetector::create("FAST");
+      fs->extractor = cv::DescriptorExtractor::create("SURF");
+      fs->matcher = cv::DescriptorMatcher::create("FlannBased");
+    }
+  }
+
+  fs->num_frame = 0;
 }
 
 static void
@@ -610,7 +613,6 @@ gst_panography_release_all_pointers (GstPanography * filter)
 {
   cvReleaseImage (&filter->cvRGB_r);
   cvReleaseImage (&filter->cvRGB_l);
+  delete filter->cvGray_right;
   delete filter->cvGray_left;
-
-  delete filter->surf;
 }
