@@ -71,6 +71,7 @@ struct _GstPanography
   GstCaps *caps;
 
   gint method;
+  gboolean test_mode;
   gboolean display;
 
   int width;
