@@ -84,7 +84,8 @@ enum
 enum
 {
   PROP_0,
-  PROP_METHOD,
+  PROP_TEST_MODE,
+  PROP_METHOD
 };
 
 typedef enum
@@ -93,6 +94,7 @@ typedef enum
   METHOD_SURF
 } GstPanographyMethod;
 
+#define DEFAULT_TEST_MODE FALSE
 #define DEFAULT_METHOD METHOD_SURF
 
 #define GST_TYPE_PANOGRAPHY_METHOD (gst_panography_method_get_type ())
@@ -168,6 +170,11 @@ gst_panography_class_init (GstPanographyClass * klass)
           "Keypoint/Feature extractor to use",
           GST_TYPE_PANOGRAPHY_METHOD, DEFAULT_METHOD,
           (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+  g_object_class_install_property (gobject_class, PROP_TEST_MODE,
+      g_param_spec_boolean ("test-mode", "test-mode",
+          "If true, show found correspondences between frames.",
+          DEFAULT_TEST_MODE, (GParamFlags)
+          (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
   element_class->change_state = gst_panography_change_state;
 
@@ -220,6 +227,7 @@ gst_panography_init (GstPanography * filter)
   g_mutex_init (&filter->lock);
   g_cond_init (&filter->cond);
 
+  filter->test_mode = DEFAULT_TEST_MODE;
   filter->method = DEFAULT_METHOD;
 }
 
@@ -229,6 +237,9 @@ gst_panography_set_property (GObject * object, guint prop_id,
 {
   GstPanography *filter = GST_PANOGRAPHY (object);
   switch (prop_id) {
+    case PROP_TEST_MODE:
+      filter->test_mode = g_value_get_boolean (value);
+      break;
     case PROP_METHOD:
       filter->method = g_value_get_enum (value);
       break;
@@ -245,6 +256,9 @@ gst_panography_get_property (GObject * object, guint prop_id,
   GstPanography *filter = GST_PANOGRAPHY (object);
 
   switch (prop_id) {
+    case PROP_TEST_MODE:
+      g_value_set_boolean (value, filter->test_mode);
+      break;
     case PROP_METHOD:
       g_value_set_enum (value, filter->method);
       break;
@@ -510,24 +524,24 @@ gst_panography_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer
   }
   if (new_good_matches.size() > 10) fs->good_matches = new_good_matches;
 
-
-  bool draw_matches = false;
-  if (draw_matches && (fs->good_matches.size() > 10)) {
+  if (fs->test_mode) {
     // Limit to 40 good matches.
-    fs->good_matches.erase(fs->good_matches.begin()+40, fs->good_matches.end());
+    if (fs->good_matches.size() > 10) {
+      fs->good_matches.erase(fs->good_matches.begin()+10,
+                             fs->good_matches.end());
 
-    cv::Mat img_matches;
-    drawMatches(*fs->cvGray_left, fs->keypoints1,
-                *fs->cvGray_right, fs->keypoints2,
-                fs->good_matches, img_matches,
-                cv::Scalar::all(-1),
-                cv::Scalar::all(-1),
-                std::vector<char>(),
-                cv::DrawMatchesFlags::DEFAULT);
-    GST_INFO_OBJECT(pad, "(%dx%d)", img_matches.cols, img_matches.rows );
-    cv::resize(img_matches, mat_r, mat_r.size(), 0, 0);
-    memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
-
+      cv::Mat img_matches;
+      drawMatches(*fs->cvGray_left, fs->keypoints1,
+                  *fs->cvGray_right, fs->keypoints2,
+                  fs->good_matches, img_matches,
+                  cv::Scalar::all(-1),
+                  cv::Scalar::all(-1),
+                  std::vector<char>(),
+                  cv::DrawMatchesFlags::DEFAULT);
+      GST_INFO_OBJECT(pad, "(%dx%d)", img_matches.cols, img_matches.rows );
+      cv::resize(img_matches, mat_r, mat_r.size(), 0, 0);
+      memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
+    }
   }
   else {
     std::vector<cv::Point2f> obj;
@@ -539,17 +553,21 @@ gst_panography_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer
 
     // Find the Homography Matrix
     cv::Mat H = findHomography(obj, scene, CV_RANSAC);
-    // Use the Homography Matrix to warp the images
-    cv::Mat result;
-    warpPerspective(mat_l,
-                    result,
-                    H,
-                    cv::Size(2*fs->width, 2*fs->height));
-    cv::Mat half(result,cv::Rect(0, 0, fs->width, fs->height));
-    mat_r.copyTo(half);
 
-    cv::resize(result, mat_r, fs->cvGray_right->size());
-    memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
+    // Check that H is not badly conditioned.
+    if (cv::determinant(H) > 0.01 ){
+      // Use the Homography Matrix to warp the images
+      cv::Mat result;
+      warpPerspective(mat_l,
+                      result,
+                      H,
+                      cv::Size(2*fs->width, 2*fs->height));
+      cv::Mat half(result,cv::Rect(0, 0, fs->width, fs->height));
+      mat_r.copyTo(half);
+
+      cv::resize(result, mat_r, fs->cvGray_right->size());
+      memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
+    }
   }
 
   GST_DEBUG_OBJECT (pad, " right has finished");
