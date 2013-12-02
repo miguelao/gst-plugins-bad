@@ -4,7 +4,7 @@
  * Copyright (C) 2005 Ronald S. Bultje <rbultje@ronald.bitfreak.net>
  * Copyright (C) 2008 Michael Sheldon <mike@mikeasoft.com>
  * Copyright (C) 2009 Noam Lewis <jones.noamle@gmail.com>
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
  * to deal in the Software without restriction, including without limitation
@@ -174,7 +174,7 @@ gst_template_match_init (GstTemplateMatch * filter)
 
   gst_element_add_pad (GST_ELEMENT (filter), filter->sinkpad);
   gst_element_add_pad (GST_ELEMENT (filter), filter->srcpad);
-  filter->template = NULL;
+  filter->templatename = NULL;
   filter->display = TRUE;
   filter->cvTemplateImage = NULL;
   filter->cvDistImage = NULL;
@@ -213,7 +213,7 @@ gst_template_match_set_property (GObject * object, guint prop_id,
       }
       break;
     case PROP_TEMPLATE:
-      filter->template = (char *) g_value_get_string (value);
+      filter->templatename = (char *) g_value_get_string (value);
       gst_template_match_load_template (filter);
       break;
     case PROP_DISPLAY:
@@ -236,7 +236,7 @@ gst_template_match_get_property (GObject * object, guint prop_id,
       g_value_set_int (value, filter->method);
       break;
     case PROP_TEMPLATE:
-      g_value_set_string (value, filter->template);
+      g_value_set_string (value, filter->templatename);
       break;
     case PROP_DISPLAY:
       g_value_set_boolean (value, filter->display);
@@ -316,7 +316,7 @@ gst_template_match_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
   /* FIXME Why template == NULL returns OK?
    * shouldn't it be a passthrough instead? */
-  if ((!filter) || (!buf) || filter->template == NULL) {
+  if ((!filter) || (!buf) || filter->templatename == NULL) {
     return GST_FLOW_OK;
   }
   GST_LOG_OBJECT (filter, "Buffer size %u", (guint) gst_buffer_get_size (buf));
@@ -405,13 +405,13 @@ gst_template_match_match (IplImage * input, IplImage * template,
 static void
 gst_template_match_load_template (GstTemplateMatch * filter)
 {
-  if (filter->template) {
+  if (filter->templatename) {
     filter->cvTemplateImage =
-        cvLoadImage (filter->template, CV_LOAD_IMAGE_COLOR);
+        cvLoadImage (filter->templatename, CV_LOAD_IMAGE_COLOR);
 
     if (!filter->cvTemplateImage) {
       GST_WARNING ("Couldn't load template image: %s. error: %s",
-          filter->template, g_strerror (errno));
+          filter->templatename, g_strerror (errno));
     }
   }
 }
