@@ -556,14 +556,19 @@ gst_panography_chain_right (GstPad * pad, GstObject * parent, GstBuffer * buffer
 
     // Check that H is not badly conditioned.
     if (cv::determinant(H) > 0.01 ){
-      // Use the Homography Matrix to warp the images
+      // Use the Homography Matrix to warp the images, but offset it to the
+      // center of the output canvas. Careful to pre-multiply, not post-multiply.
+      cv::Mat Offset = (cv::Mat_<double>(3,3) << 1, 0, fs->width, 0, 1, fs->height, 0, 0, 1);
+      H = Offset * H;
+
       cv::Mat result;
       warpPerspective(mat_l,
                       result,
                       H,
-                      cv::Size(2*fs->width, 2*fs->height));
-      cv::Mat half(result,cv::Rect(0, 0, fs->width, fs->height));
-      mat_r.copyTo(half);
+                      cv::Size(3*fs->width, 3*fs->height));
+      // Copy the reference image to the center of the 3x3 output canvas.
+      cv::Mat roi = result.colRange(fs->width,2*fs->width).rowRange(fs->height,2*fs->height);
+      mat_r.copyTo(roi);
 
       cv::resize(result, mat_r, fs->cvGray_right->size());
       memcpy(fs->cvRGB_r->imageData, mat_r.data, fs->width*fs->height*3);
