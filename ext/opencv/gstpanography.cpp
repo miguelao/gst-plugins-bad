@@ -43,9 +43,10 @@
 /*
  * SECTION:element-panography
  *
- * This element stitches two images together.
-
-
+ * This element stitches two video feeds together, and represents the right
+ * channel as a reference over which the left one warps - supposed of course
+ * there is enough overlap for a correct feature matching.
+*
  * OpenCV Feature detection, matching and result drawing can be found in [1]
  *
  * [1] http://docs.opencv.org/doc/user_guide/ug_features2d.html
@@ -57,7 +58,7 @@ gst-launch-1.0    multifilesrc  location=~/im3.png ! pngdec ! videoconvert  ! pa
  * ]|
  * Yet another example with two cameras:
  * |[
-gst-launch-1.0  --gst-debug=2   v4l2src device=/dev/video2 ! videoconvert  ! video/x-raw,format=I420,width=640,height=480 ! videoconvert ! pano0.sink_right     v4l2src device=/dev/video3 ! videoconvert ! video/x-raw,format=I420,width=640,height=480 ! videoconvert ! pano0.sink_left panography   name=pano0 method=surf     pano0.src ! videoconvert ! ximagesink
+gst-launch-1.0  --gst-debug=2   v4l2src device=/dev/video2 ! videoconvert  ! video/x-raw,width=320,height=240 ! videoconvert ! pano0.sink_right     v4l2src device=/dev/video3 ! videoconvert ! video/x-raw,width=320,height=240 ! videoconvert ! pano0.sink_left panography   name=pano0 method=surf test-mode=false    pano0.src ! videoconvert ! ximagesink
  * ]|
  * </refsect2>
  */
