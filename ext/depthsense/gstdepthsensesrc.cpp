@@ -276,12 +276,11 @@ gst_depthsense_src_start (GstBaseSrc * bsrc)
 {
   GstDepthSenseSrc *src = GST_DEPTHSENSE_SRC (bsrc);
   GST_INFO_OBJECT (src, "gst_depthsense_src_start");
-  src->context_.startNodes();
-
-
   pthread_mutex_init(&capture_mutex, NULL);
   pthread_cond_init(&condc, NULL);    /* Initialize consumer condition variable */
   pthread_cond_init(&condp, NULL);    /* Initialize producer condition variable */
+
+  src->context_.startNodes();
 
   // context_.run() has to go on a thread of its own, otherwise it will starve
   // the Gstreamer thread.
@@ -302,6 +301,8 @@ gst_depthsense_src_stop (GstBaseSrc * bsrc)
   src->context_.stopNodes();
   if (src->dnode_.isSet())
     src->context_.unregisterNode(src->dnode_);
+
+  src->context_.quit();
 
   //pthread_join(src->capture_thread_, NULL);
 
@@ -508,10 +509,10 @@ depthsense_initialise_devices (GstDepthSenseSrc * src)
   src->dnode_ = node.as<DepthNode>();
   src->context_.registerNode(node);
 
-  const int kFrameRateDepth = 60;
+  const int kFrameRateDepth = 30;
 
   src->dnode_.newSampleReceivedEvent().connect(&onNewDepthSample);
-  DepthNode::Configuration configRef(FRAME_FORMAT_QVGA,
+  DepthNode::Configuration configRef(DepthSense::FRAME_FORMAT_QVGA,
                                      kFrameRateDepth,
                                      DepthNode::CAMERA_MODE_CLOSE_MODE,
                                      true);
@@ -519,7 +520,7 @@ depthsense_initialise_devices (GstDepthSenseSrc * src)
   config.framerate = kFrameRateDepth;
   config.mode = DepthNode::CAMERA_MODE_CLOSE_MODE;
   config.saturation = true;
-  config.frameFormat = FRAME_FORMAT_QVGA;
+  config.frameFormat = DepthSense::FRAME_FORMAT_QVGA;
   src->width = 320;
   src->height = 240;
 
@@ -543,6 +544,7 @@ depthsense_initialise_devices (GstDepthSenseSrc * src)
   } catch (TimeoutException&) {
     GST_ERROR_OBJECT(src, "DEPTH TimeoutException\n");
   }
+  src->context_.releaseControl(src->dnode_);
 
   return TRUE;
 }
@@ -558,17 +560,20 @@ unsigned int frameCount = 0;
 static
 void onNewDepthSample(DepthNode node, DepthNode::NewSampleReceivedData data) {
 
+  int32_t w, h;
+  FrameFormat_toResolution(data.captureConfiguration.frameFormat, &w, &h);
+  printf(" onNewDepthSample %dx%d\n", w, h);
+
   pthread_mutex_lock(&capture_mutex);
   while (consumer_or_producer == kConsumerTurn)
     pthread_cond_wait(&condp, &capture_mutex);
 
   // Initialize raw depth and UV maps
-  for (int currentPixelInd = 0; currentPixelInd < kNumPixelsQVGA;
-      currentPixelInd++) {
-    if (data.confidenceMap[currentPixelInd] > kConfidenceThreshold)
-      pixelsDepthAcq[currentPixelInd] = data.depthMap[currentPixelInd];
+  for (int pixel = 0; pixel < kNumPixelsQVGA; pixel++) {
+    if (data.confidenceMap[pixel] > kConfidenceThreshold)
+      pixelsDepthAcq[pixel] = data.depthMap[pixel];
     else
-      pixelsDepthAcq[currentPixelInd] = kNoDepthDefault;
+      pixelsDepthAcq[pixel] = kNoDepthDefault;
   }
 
   // Exit protocol
@@ -587,9 +592,7 @@ depthsense_read_gstbuffer (GstDepthSenseSrc * src, GstBuffer * buf)
       kNumPixelsQVGA);
   GstVideoFrame vframe;
 
-  /* Copy depth information */
   gst_video_frame_map (&vframe, &src->info, buf, GST_MAP_WRITE);
-
 
   pthread_mutex_lock(&capture_mutex);
   while (consumer_or_producer == kProducerTurn)
@@ -598,12 +601,6 @@ depthsense_read_gstbuffer (GstDepthSenseSrc * src, GstBuffer * buf)
   guint16 *pData = (guint16 *) GST_VIDEO_FRAME_PLANE_DATA (&vframe, 0);
   guint16 *pDepth = (guint16 *) pixelsDepthAcq;
   memcpy (pData, pDepth, 2 * src->height * src->width);
-
-  //for (int i = 0; i < src->height; ++i) {
-  //  memcpy (pData, pDepth, 2 * src->width);
-  //  pData += GST_VIDEO_FRAME_PLANE_STRIDE (&vframe, 0) / 2;
-  //  pDepth += src->width / 2;
-  //}
   gst_video_frame_unmap (&vframe);
 
   //Exit protocol
