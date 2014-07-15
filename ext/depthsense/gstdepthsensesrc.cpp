@@ -590,18 +590,20 @@ depthsense_read_gstbuffer (GstDepthSenseSrc * src, GstBuffer * buf)
   /* Copy depth information */
   gst_video_frame_map (&vframe, &src->info, buf, GST_MAP_WRITE);
 
-  guint16 *pData = (guint16 *) GST_VIDEO_FRAME_PLANE_DATA (&vframe, 0);
-  guint16 *pDepth = (guint16 *) pixelsDepthAcq;
 
   pthread_mutex_lock(&capture_mutex);
   while (consumer_or_producer == kProducerTurn)
     pthread_cond_wait(&condc, &capture_mutex);
 
-  for (int i = 0; i < src->height; ++i) {
-    memcpy (pData, pDepth, 2 * src->width);
-    pData += GST_VIDEO_FRAME_PLANE_STRIDE (&vframe, 0) / 2;
-    pDepth += src->width / 2;
-  }
+  guint16 *pData = (guint16 *) GST_VIDEO_FRAME_PLANE_DATA (&vframe, 0);
+  guint16 *pDepth = (guint16 *) pixelsDepthAcq;
+  memcpy (pData, pDepth, 2 * src->height * src->width);
+
+  //for (int i = 0; i < src->height; ++i) {
+  //  memcpy (pData, pDepth, 2 * src->width);
+  //  pData += GST_VIDEO_FRAME_PLANE_STRIDE (&vframe, 0) / 2;
+  //  pDepth += src->width / 2;
+  //}
   gst_video_frame_unmap (&vframe);
 
   //Exit protocol
