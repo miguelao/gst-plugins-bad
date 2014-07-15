@@ -62,11 +62,8 @@ struct _GstDepthsenseSrc
   GstVideoInfo info;
   GstCaps *gst_caps;
 
-  /* Timestamp of the first frame */
-  GstClockTime oni_start_ts;
-
   int width, height, fps;
-
+  bool capturing;
   Context context_;
   DepthNode dnode_;
   pthread_t capture_thread_;

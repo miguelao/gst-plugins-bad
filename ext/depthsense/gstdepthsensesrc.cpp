@@ -115,10 +115,12 @@ static GstFlowReturn depthsense_read_gstbuffer (GstDepthSenseSrc * src,
 static void onNewDepthSample(DepthNode node,
                              DepthNode::NewSampleReceivedData data);
 
-
-static pthread_mutex_t capture_mutex =  PTHREAD_MUTEX_INITIALIZER;
+////////////////////////////////////////////////////////////////////////////////
+static pthread_mutex_t g_capture_mutex =  PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t condc, condp;
 enum {kProducerTurn, kConsumerTurn} consumer_or_producer = kProducerTurn;
+bool finish_capture_thread;
+
 
 #define parent_class gst_depthsense_src_parent_class
 G_DEFINE_TYPE (GstDepthSenseSrc, gst_depthsense_src, GST_TYPE_PUSH_SRC);
@@ -182,7 +184,9 @@ gst_depthsense_src_init (GstDepthSenseSrc * ds_src)
   gst_base_src_set_live (GST_BASE_SRC (ds_src), TRUE);
   gst_base_src_set_format (GST_BASE_SRC (ds_src), GST_FORMAT_TIME);
 
-  ds_src->oni_start_ts = GST_CLOCK_TIME_NONE;
+  ds_src->width = 0;
+  ds_src->height = 0;
+  ds_src->capturing = false;
 }
 
 static void
@@ -199,13 +203,6 @@ gst_depthsense_src_dispose (GObject * object)
 static void
 gst_depthsense_src_finalize (GObject * gobject)
 {
-  //GstDepthSenseSrc *ds_src = GST_DEPTHSENSE_SRC (gobject);
-
-  //if (ds_src->colorFrame) {
-  //  delete ds_src->colorFrame;
-  //  ds_src->colorFrame = NULL;
-  //}
-
   G_OBJECT_CLASS (parent_class)->finalize (gobject);
 }
 
@@ -266,30 +263,25 @@ static void run_capture_thread(void* context) {
   ((Context*)(context))->run();
 }
 
-/* Interesting info from gstv4l2src.c:
- * "start and stop are not symmetric -- start will open the device, but not
- * start capture. it's setcaps that will start capture, which is called via
- * basesrc's negotiate method. stop will both stop capture and close t device."
- */
 static gboolean
 gst_depthsense_src_start (GstBaseSrc * bsrc)
 {
   GstDepthSenseSrc *src = GST_DEPTHSENSE_SRC (bsrc);
   GST_INFO_OBJECT (src, "gst_depthsense_src_start");
-  pthread_mutex_init(&capture_mutex, NULL);
+  pthread_mutex_init(&g_capture_mutex, NULL);
   pthread_cond_init(&condc, NULL);    /* Initialize consumer condition variable */
   pthread_cond_init(&condp, NULL);    /* Initialize producer condition variable */
 
   src->context_.startNodes();
 
+  finish_capture_thread = false;
   // context_.run() has to go on a thread of its own, otherwise it will starve
-  // the Gstreamer thread.
+  // the Gstreamer depthsensesrc thread.
   pthread_create(&src->capture_thread_,
                  NULL,
                  (void* (*)(void*))&run_capture_thread,
                  (void*)&src->context_);
-  //src->context_.run();
-
+  src->capturing = true;
   return TRUE;
 }
 
@@ -298,20 +290,22 @@ gst_depthsense_src_stop (GstBaseSrc * bsrc)
 {
   GstDepthSenseSrc *src = GST_DEPTHSENSE_SRC (bsrc);
   GST_INFO_OBJECT (src, "gst_depthsense_src_stop");
-  src->context_.stopNodes();
-  if (src->dnode_.isSet())
-    src->context_.unregisterNode(src->dnode_);
-
-  src->context_.quit();
-
-  //pthread_join(src->capture_thread_, NULL);
+  if (src->capturing) {
+    src->context_.stopNodes();
+    while (!src->context_.getRegisteredNodes().empty())
+      src->context_.unregisterNode(src->context_.getRegisteredNodes().back());
+    src->context_.quit();
+    src->capturing = false;
+  }
+  finish_capture_thread = true;
+  pthread_join(src->capture_thread_, NULL);
 
   return TRUE;
 }
 
 static GstCaps *
 gst_depthsense_src_get_caps (GstBaseSrc * src, GstCaps * filter)
-{
+  {
   GstDepthSenseSrc *ds_src;
   GstCaps *caps;
   GstVideoInfo info;
@@ -395,7 +389,6 @@ gst_depthsense_src_change_state (GstElement * element, GstStateChange transition
     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
       break;
     case GST_STATE_CHANGE_PAUSED_TO_READY:
-      src->oni_start_ts = GST_CLOCK_TIME_NONE;
       break;
     default:
       break;
@@ -507,7 +500,7 @@ depthsense_initialise_devices (GstDepthSenseSrc * src)
   Node node = na[i];
 
   src->dnode_ = node.as<DepthNode>();
-  src->context_.registerNode(node);
+  src->context_.registerNode(src->dnode_);
 
   const int kFrameRateDepth = 30;
 
@@ -554,19 +547,19 @@ const int kNumPixelsQVGA = 320 * 240;
 const int16_t kConfidenceThreshold = 10;
 const uint16_t kNoDepthDefault = 65535;
 uint16_t pixelsDepthAcqQVGA[kNumPixelsQVGA];
-uint16_t* pixelsDepthAcq = pixelsDepthAcqQVGA;
-unsigned int frameCount = 0;
+uint16_t* const pixelsDepthAcq = pixelsDepthAcqQVGA;
 
 static
 void onNewDepthSample(DepthNode node, DepthNode::NewSampleReceivedData data) {
 
   int32_t w, h;
   FrameFormat_toResolution(data.captureConfiguration.frameFormat, &w, &h);
-  printf(" onNewDepthSample %dx%d\n", w, h);
+  //printf(" onNewDepthSample %dx%d\n", w, h);
 
-  pthread_mutex_lock(&capture_mutex);
+  // Critical section entry protocol.
+  pthread_mutex_lock(&g_capture_mutex);
   while (consumer_or_producer == kConsumerTurn)
-    pthread_cond_wait(&condp, &capture_mutex);
+    pthread_cond_wait(&condp, &g_capture_mutex);
 
   // Initialize raw depth and UV maps
   for (int pixel = 0; pixel < kNumPixelsQVGA; pixel++) {
@@ -576,17 +569,19 @@ void onNewDepthSample(DepthNode node, DepthNode::NewSampleReceivedData data) {
       pixelsDepthAcq[pixel] = kNoDepthDefault;
   }
 
-  // Exit protocol
-  frameCount++;
+  // Critical section exit protocol.
   consumer_or_producer = kConsumerTurn;
-  pthread_cond_signal(&condc);  /* wake up consumer */
-  pthread_mutex_unlock(&capture_mutex);
+  pthread_cond_signal(&condc);  // wake up consumer
+  pthread_mutex_unlock(&g_capture_mutex);
+
+  if (finish_capture_thread)
+    pthread_exit(NULL);
 }
 
 static GstFlowReturn
 depthsense_read_gstbuffer (GstDepthSenseSrc * src, GstBuffer * buf)
 {
-  GST_INFO_OBJECT (src, "sending buffer (%dx%d)=%dB",
+  GST_DEBUG_OBJECT (src, "sending buffer (%dx%d)=%dB",
       src->width,
       src->height,
       kNumPixelsQVGA);
@@ -594,9 +589,9 @@ depthsense_read_gstbuffer (GstDepthSenseSrc * src, GstBuffer * buf)
 
   gst_video_frame_map (&vframe, &src->info, buf, GST_MAP_WRITE);
 
-  pthread_mutex_lock(&capture_mutex);
+  pthread_mutex_lock(&g_capture_mutex);
   while (consumer_or_producer == kProducerTurn)
-    pthread_cond_wait(&condc, &capture_mutex);
+    pthread_cond_wait(&condc, &g_capture_mutex);
 
   guint16 *pData = (guint16 *) GST_VIDEO_FRAME_PLANE_DATA (&vframe, 0);
   guint16 *pDepth = (guint16 *) pixelsDepthAcq;
@@ -605,10 +600,8 @@ depthsense_read_gstbuffer (GstDepthSenseSrc * src, GstBuffer * buf)
 
   //Exit protocol
   consumer_or_producer = kProducerTurn;
-  pthread_cond_signal(&condp);  /* wake up consumer */
-  pthread_mutex_unlock(&capture_mutex);
-
-  GST_BUFFER_PTS (buf) = clock();
+  pthread_cond_signal(&condp);  // wake up producer
+  pthread_mutex_unlock(&g_capture_mutex);
 
   GST_LOG_OBJECT (src, "Calculated PTS as %" GST_TIME_FORMAT,
       GST_TIME_ARGS (GST_BUFFER_PTS (buf)));
