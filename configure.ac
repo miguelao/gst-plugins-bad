@@ -1984,8 +1984,8 @@ AG_GST_CHECK_FEATURE(DEPTHSENSE, [DepthSense sdk], depthsense, [
   AC_CHECK_LIB(dl, dlopen,
     [
       HAVE_DEPTHSENSE=yes
-      DEPTHSENSE_CXXFLAGS="-I /opt/softkinetic/DepthSenseSDK/include"
-      DEPTHSENSE_LIBS="-L /opt/softkinetic/DepthSenseSDK/lib/ -lDepthSense -lDepthSensePlugins -lturbojpeg"
+      DEPTHSENSE_CXXFLAGS="-I/opt/softkinetic/DepthSenseSDK/include"
+      DEPTHSENSE_LIBS="-L/opt/softkinetic/DepthSenseSDK/lib/ -lDepthSense -lDepthSensePlugins -lturbojpeg"
     ])
 
    AC_SUBST(DEPTHSENSE_CXXFLAGS)

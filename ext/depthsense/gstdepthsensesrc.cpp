@@ -42,12 +42,14 @@
 
 #include "gstdepthsensesrc.h"
 
+#include <vector>
+
 GST_DEBUG_CATEGORY_STATIC (depthsensesrc_debug);
 #define GST_CAT_DEFAULT depthsensesrc_debug
 static GstStaticPadTemplate srctemplate = GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE ("{RGBA, RGB, GRAY16_LE}"))
+    GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE ("GRAY16_LE"))
     );
 
 enum
@@ -152,7 +154,8 @@ gst_depthsense_src_class_init (GstDepthSenseSrcClass * klass)
   gst_element_class_add_pad_template (element_class,
       gst_static_pad_template_get (&srctemplate));
 
-  gst_element_class_set_static_metadata (element_class, "DepthSense client source",
+  gst_element_class_set_static_metadata (element_class,
+      "DepthSense client source",
       "Source/Video",
       "Extract readings from a DepthSense supported device (DS325, Creative Senz etc). ",
       "Miguel Casas-Sanchez <miguelecasassanchez@gmail.com>");
@@ -284,9 +287,13 @@ gst_depthsense_src_get_caps (GstBaseSrc * src, GstCaps * filter)
   GstVideoFormat format;
 
   ds_src = GST_DEPTHSENSE_SRC (src);
+  GST_INFO_OBJECT(src, "gst_depthsense_src_get_caps");
 
   GST_OBJECT_LOCK (ds_src);
   if (ds_src->gst_caps)
+    goto out;
+
+  if (!ds_src->dnode_.isSet())
     goto out;
 
   format = GST_VIDEO_FORMAT_GRAY16_LE;
@@ -440,6 +447,91 @@ depthsense_initialise_library (void)
 static gboolean
 depthsense_initialise_devices (GstDepthSenseSrc * src)
 {
+  GST_INFO_OBJECT (src, "depthsense_initialise_devices");
+  src->context_ = Context::create("localhost");
+
+  //context_.deviceAddedEvent().connect(&onDeviceConnected);
+  //context_.deviceRemovedEvent().connect(&onDeviceDisconnected);
+
+  // Get the list of currently connected devices
+  vector<Device> da = src->context_.getDevices();
+
+  // We are only interested in the first device
+  if (da.size() < 1) {
+    GST_ERROR_OBJECT (src, "Found no DepthSense devices");
+    return FALSE;
+  }
+  GST_INFO_OBJECT (src, "Found %lu devices", da.size());
+
+
+    //da[0].nodeAddedEvent().connect(&onNodeConnected);
+    //da[0].nodeRemovedEvent().connect(&onNodeDisconnected);
+
+  vector<Node> na = da[0].getNodes();
+  GST_INFO_OBJECT (src, "Found %lu nodes", na.size());
+
+  if ((int)na.size() == 0) {
+    GST_ERROR_OBJECT (src, "Found no DepthSense nodes");
+    return FALSE;
+  }
+
+  if (src->dnode_.isSet()) {
+    GST_ERROR_OBJECT (src, "Depth node already set.");
+    return FALSE;
+  }
+
+  size_t i = 0;
+  for (; i < na.size(); ++i) {
+    if (na[i].is<DepthNode>())
+      break;
+  }
+  if (i == na.size()) {
+    GST_ERROR_OBJECT (src, "Found no Depth node.");
+    return FALSE;
+  }
+  Node node = na[i];
+
+  src->dnode_ = node.as<DepthNode>();
+  src->context_.registerNode(node);
+
+  const int kFrameRateDepth = 60;
+
+  //src->dnode_.newSampleReceivedEvent().connect(&onNewDepthSample);
+  DepthNode::Configuration configRef(FRAME_FORMAT_QVGA,
+                                     kFrameRateDepth,
+                                     DepthNode::CAMERA_MODE_CLOSE_MODE,
+                                     true);
+  DepthNode::Configuration config = src->dnode_.getConfiguration();
+  config.framerate = kFrameRateDepth;
+  config.mode = DepthNode::CAMERA_MODE_CLOSE_MODE;
+  config.saturation = true;
+  config.frameFormat = FRAME_FORMAT_QVGA;
+  src->width = 320;
+  src->height = 240;
+
+  src->dnode_.setEnableDepthMap(true);
+  src->dnode_.setEnableConfidenceMap(true);
+  try {
+    src->context_.requestControl(src->dnode_, 0);
+    src->dnode_.setConfiguration(config);
+  } catch (ArgumentException& e) {
+    GST_ERROR_OBJECT(src, "DEPTH Argument Exception: %s\n",e.what());
+  } catch (UnauthorizedAccessException& e) {
+    GST_ERROR_OBJECT(src, "DEPTH Unauthorized Access Exception: %s\n",e.what());
+  } catch (IOException& e) {
+    GST_ERROR_OBJECT(src, "DEPTH IO Exception: %s\n",e.what());
+  } catch (InvalidOperationException& e) {
+    GST_ERROR_OBJECT(src, "DEPTH Invalid Operation Exception: %s\n",e.what());
+  } catch (ConfigurationException& e) {
+    GST_ERROR_OBJECT(src, "DEPTH Configuration Exception: %s\n",e.what());
+  } catch (StreamingException& e) {
+    GST_ERROR_OBJECT(src, "DEPTH Streaming Exception: %s\n",e.what());
+  } catch (TimeoutException&) {
+    GST_ERROR_OBJECT(src, "DEPTH TimeoutException\n");
+  }
+
+
+
   return TRUE;
 }
 

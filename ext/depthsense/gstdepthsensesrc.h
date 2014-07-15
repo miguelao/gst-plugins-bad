@@ -21,6 +21,11 @@
 #include <gst/gst.h>
 #include <stdio.h>
 
+#include <DepthSense.hxx>
+
+using namespace DepthSense;
+using namespace std;
+
 #include <gst/base/gstbasesrc.h>
 #include <gst/base/gstpushsrc.h>
 #include <gst/video/video.h>
@@ -60,6 +65,9 @@ struct _GstDepthsenseSrc
   GstClockTime oni_start_ts;
 
   int width, height, fps;
+
+  Context context_;
+  DepthNode dnode_;
 };
 
 struct _GstDepthsenseSrcClass

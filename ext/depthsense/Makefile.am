@@ -5,14 +5,14 @@ libgstdepthsense_la_SOURCES = gstdepthsense.cpp \
                               gstdepthsensesrc.cpp
 
 libgstdepthsense_la_CXXFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) \
-$(GST_CXXFLAGS) $(depthsense_CFLAGS)
+$(GST_CXXFLAGS) $(DEPTHSENSE_CXXFLAGS)
 
 # flags used to compile this module; add other _CFLAGS and _LIBS as needed
 #
 libgstdepthsense_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) \
-                       $(GST_CFLAGS) $(depthsense_CFLAGS)
+                       $(GST_CFLAGS) $(DEPTHSENSE_CFLAGS)
 
-libgstdepthsense_la_LIBADD = $(GST_LIBS) $(GST_BASE_LIBS) $(depthsense_LIBS) \
+libgstdepthsense_la_LIBADD = $(GST_LIBS) $(GST_BASE_LIBS) $(DEPTHSENSE_LIBS) \
                        $(GSTPB_BASE_LIBS) -lgstvideo-$(GST_API_VERSION)
 
 libgstdepthsense_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS)
