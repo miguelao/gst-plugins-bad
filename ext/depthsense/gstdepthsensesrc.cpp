@@ -42,6 +42,7 @@
 
 #include "gstdepthsensesrc.h"
 
+#include <string.h>
 #include <vector>
 
 GST_DEBUG_CATEGORY_STATIC (depthsensesrc_debug);
@@ -107,10 +108,17 @@ static GstStateChangeReturn gst_depthsense_src_change_state (GstElement * elemen
 static GstFlowReturn gst_depthsensesrc_fill (GstPushSrc * src, GstBuffer * buf);
 
 /* DeptHSENSE interaction methods */
-static gboolean depthsense_initialise_library ();
 static gboolean depthsense_initialise_devices (GstDepthSenseSrc * src);
 static GstFlowReturn depthsense_read_gstbuffer (GstDepthSenseSrc * src,
     GstBuffer * buf);
+
+static void onNewDepthSample(DepthNode node,
+                             DepthNode::NewSampleReceivedData data);
+
+
+static pthread_mutex_t capture_mutex =  PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t condc, condp;
+enum {kProducerTurn, kConsumerTurn} consumer_or_producer = kProducerTurn;
 
 #define parent_class gst_depthsense_src_parent_class
 G_DEFINE_TYPE (GstDepthSenseSrc, gst_depthsense_src, GST_TYPE_PUSH_SRC);
@@ -166,9 +174,6 @@ gst_depthsense_src_class_init (GstDepthSenseSrcClass * klass)
 
   GST_DEBUG_CATEGORY_INIT (depthsensesrc_debug, "depthsensesrc", 0,
       "Depthsense Device Source");
-
-  /* DeptHSENSE initialisation inside this function */
-  depthsense_initialise_library ();
 }
 
 static void
@@ -257,6 +262,10 @@ gst_depthsense_src_get_property (GObject * object, guint prop_id,
   GST_OBJECT_UNLOCK (depthsensesrc);
 }
 
+static void run_capture_thread(void* context) {
+  ((Context*)(context))->run();
+}
+
 /* Interesting info from gstv4l2src.c:
  * "start and stop are not symmetric -- start will open the device, but not
  * start capture. it's setcaps that will start capture, which is called via
@@ -265,7 +274,22 @@ gst_depthsense_src_get_property (GObject * object, guint prop_id,
 static gboolean
 gst_depthsense_src_start (GstBaseSrc * bsrc)
 {
-  //GstDepthSenseSrc *src = GST_DEPTHSENSE_SRC (bsrc);
+  GstDepthSenseSrc *src = GST_DEPTHSENSE_SRC (bsrc);
+  GST_INFO_OBJECT (src, "gst_depthsense_src_start");
+  src->context_.startNodes();
+
+
+  pthread_mutex_init(&capture_mutex, NULL);
+  pthread_cond_init(&condc, NULL);    /* Initialize consumer condition variable */
+  pthread_cond_init(&condp, NULL);    /* Initialize producer condition variable */
+
+  // context_.run() has to go on a thread of its own, otherwise it will starve
+  // the Gstreamer thread.
+  pthread_create(&src->capture_thread_,
+                 NULL,
+                 (void* (*)(void*))&run_capture_thread,
+                 (void*)&src->context_);
+  //src->context_.run();
 
   return TRUE;
 }
@@ -273,7 +297,13 @@ gst_depthsense_src_start (GstBaseSrc * bsrc)
 static gboolean
 gst_depthsense_src_stop (GstBaseSrc * bsrc)
 {
-  //GstDepthSenseSrc *src = GST_DEPTHSENSE_SRC (bsrc);
+  GstDepthSenseSrc *src = GST_DEPTHSENSE_SRC (bsrc);
+  GST_INFO_OBJECT (src, "gst_depthsense_src_stop");
+  src->context_.stopNodes();
+  if (src->dnode_.isSet())
+    src->context_.unregisterNode(src->dnode_);
+
+  //pthread_join(src->capture_thread_, NULL);
 
   return TRUE;
 }
@@ -436,22 +466,16 @@ gst_depthsensesrc_plugin_init (GstPlugin * plugin)
       GST_TYPE_DEPTHSENSE_SRC);
 }
 
-
-static gboolean
-depthsense_initialise_library (void)
-{
-  return GST_FLOW_OK;
-  //return (rc == openni::STATUS_OK);
-}
-
 static gboolean
 depthsense_initialise_devices (GstDepthSenseSrc * src)
 {
   GST_INFO_OBJECT (src, "depthsense_initialise_devices");
   src->context_ = Context::create("localhost");
 
-  //context_.deviceAddedEvent().connect(&onDeviceConnected);
-  //context_.deviceRemovedEvent().connect(&onDeviceDisconnected);
+  if (src->dnode_.isSet()) {
+    GST_ERROR_OBJECT (src, "Depth node already set.");
+    return FALSE;
+  }
 
   // Get the list of currently connected devices
   vector<Device> da = src->context_.getDevices();
@@ -463,22 +487,12 @@ depthsense_initialise_devices (GstDepthSenseSrc * src)
   }
   GST_INFO_OBJECT (src, "Found %lu devices", da.size());
 
-
-    //da[0].nodeAddedEvent().connect(&onNodeConnected);
-    //da[0].nodeRemovedEvent().connect(&onNodeDisconnected);
-
   vector<Node> na = da[0].getNodes();
-  GST_INFO_OBJECT (src, "Found %lu nodes", na.size());
-
   if ((int)na.size() == 0) {
     GST_ERROR_OBJECT (src, "Found no DepthSense nodes");
     return FALSE;
   }
-
-  if (src->dnode_.isSet()) {
-    GST_ERROR_OBJECT (src, "Depth node already set.");
-    return FALSE;
-  }
+  GST_INFO_OBJECT (src, "Found %lu nodes", na.size());
 
   size_t i = 0;
   for (; i < na.size(); ++i) {
@@ -496,7 +510,7 @@ depthsense_initialise_devices (GstDepthSenseSrc * src)
 
   const int kFrameRateDepth = 60;
 
-  //src->dnode_.newSampleReceivedEvent().connect(&onNewDepthSample);
+  src->dnode_.newSampleReceivedEvent().connect(&onNewDepthSample);
   DepthNode::Configuration configRef(FRAME_FORMAT_QVGA,
                                      kFrameRateDepth,
                                      DepthNode::CAMERA_MODE_CLOSE_MODE,
@@ -530,67 +544,72 @@ depthsense_initialise_devices (GstDepthSenseSrc * src)
     GST_ERROR_OBJECT(src, "DEPTH TimeoutException\n");
   }
 
-
-
   return TRUE;
+}
+
+
+const int kNumPixelsQVGA = 320 * 240;
+const int16_t kConfidenceThreshold = 10;
+const uint16_t kNoDepthDefault = 65535;
+uint16_t pixelsDepthAcqQVGA[kNumPixelsQVGA];
+uint16_t* pixelsDepthAcq = pixelsDepthAcqQVGA;
+unsigned int frameCount = 0;
+
+static
+void onNewDepthSample(DepthNode node, DepthNode::NewSampleReceivedData data) {
+
+  pthread_mutex_lock(&capture_mutex);
+  while (consumer_or_producer == kConsumerTurn)
+    pthread_cond_wait(&condp, &capture_mutex);
+
+  // Initialize raw depth and UV maps
+  for (int currentPixelInd = 0; currentPixelInd < kNumPixelsQVGA;
+      currentPixelInd++) {
+    if (data.confidenceMap[currentPixelInd] > kConfidenceThreshold)
+      pixelsDepthAcq[currentPixelInd] = data.depthMap[currentPixelInd];
+    else
+      pixelsDepthAcq[currentPixelInd] = kNoDepthDefault;
+  }
+
+  // Exit protocol
+  frameCount++;
+  consumer_or_producer = kConsumerTurn;
+  pthread_cond_signal(&condc);  /* wake up consumer */
+  pthread_mutex_unlock(&capture_mutex);
 }
 
 static GstFlowReturn
 depthsense_read_gstbuffer (GstDepthSenseSrc * src, GstBuffer * buf)
 {
-//  openni::Status rc = openni::STATUS_OK;
+  GST_INFO_OBJECT (src, "sending buffer (%dx%d)=%dB",
+      src->width,
+      src->height,
+      kNumPixelsQVGA);
+  GstVideoFrame vframe;
 
-//    /* Copy depth information */
-//    gst_video_frame_map (&vframe, &src->info, buf, GST_MAP_WRITE);
-//
-//    guint16 *pData = (guint16 *) GST_VIDEO_FRAME_PLANE_DATA (&vframe, 0);
-//    guint16 *pDepth = (guint16 *) src->depthFrame->getData ();
-//
-//    for (int i = 0; i < src->depthFrame->getHeight (); ++i) {
-//      memcpy (pData, pDepth, 2 * src->depthFrame->getWidth ());
-//      pDepth += src->depthFrame->getStrideInBytes () / 2;
-//      pData += GST_VIDEO_FRAME_PLANE_STRIDE (&vframe, 0) / 2;
-//    }
-//    gst_video_frame_unmap (&vframe);
-//
-//    oni_ts = src->depthFrame->getTimestamp () * 1000;
-//
-//    GST_LOG_OBJECT (src, "sending buffer (%dx%d)=%dB",
-//        src->depthFrame->getWidth (),
-//        src->depthFrame->getHeight (),
-//        src->depthFrame->getDataSize ());
-//  } else if (src->color->isValid () && src->sourcetype == SOURCETYPE_COLOR) {
-//    rc = src->color->readFrame (src->colorFrame);
-//    if (rc != openni::STATUS_OK) {
-//      GST_ERROR_OBJECT (src, "Frame read error: %s",
-//          openni::OpenNI::getExtendedError ());
-//      return GST_FLOW_ERROR;
-//    }
-//
-//    gst_video_frame_map (&vframe, &src->info, buf, GST_MAP_WRITE);
-//
-//    guint8 *pData = (guint8 *) GST_VIDEO_FRAME_PLANE_DATA (&vframe, 0);
-//    guint8 *pColor = (guint8 *) src->colorFrame->getData ();
-//
-//    for (int i = 0; i < src->colorFrame->getHeight (); ++i) {
-//      memcpy (pData, pColor, 3 * src->colorFrame->getWidth ());
-//      pColor += src->colorFrame->getStrideInBytes ();
-//      pData += GST_VIDEO_FRAME_PLANE_STRIDE (&vframe, 0);
-//    }
-//    gst_video_frame_unmap (&vframe);
-//
-//    oni_ts = src->colorFrame->getTimestamp () * 1000;
-//
-//    GST_LOG_OBJECT (src, "sending buffer (%dx%d)=%dB",
-//        src->colorFrame->getWidth (),
-//        src->colorFrame->getHeight (),
-//        src->colorFrame->getDataSize ());
-//  }
-//
-//  if (G_UNLIKELY (src->oni_start_ts == GST_CLOCK_TIME_NONE))
-//    src->oni_start_ts = oni_ts;
-//
-//  GST_BUFFER_PTS (buf) = oni_ts - src->oni_start_ts;
+  /* Copy depth information */
+  gst_video_frame_map (&vframe, &src->info, buf, GST_MAP_WRITE);
+
+  guint16 *pData = (guint16 *) GST_VIDEO_FRAME_PLANE_DATA (&vframe, 0);
+  guint16 *pDepth = (guint16 *) pixelsDepthAcq;
+
+  pthread_mutex_lock(&capture_mutex);
+  while (consumer_or_producer == kProducerTurn)
+    pthread_cond_wait(&condc, &capture_mutex);
+
+  for (int i = 0; i < src->height; ++i) {
+    memcpy (pData, pDepth, 2 * src->width);
+    pData += GST_VIDEO_FRAME_PLANE_STRIDE (&vframe, 0) / 2;
+    pDepth += src->width / 2;
+  }
+  gst_video_frame_unmap (&vframe);
+
+  //Exit protocol
+  consumer_or_producer = kProducerTurn;
+  pthread_cond_signal(&condp);  /* wake up consumer */
+  pthread_mutex_unlock(&capture_mutex);
+
+  GST_BUFFER_PTS (buf) = clock();
 
   GST_LOG_OBJECT (src, "Calculated PTS as %" GST_TIME_FORMAT,
       GST_TIME_ARGS (GST_BUFFER_PTS (buf)));

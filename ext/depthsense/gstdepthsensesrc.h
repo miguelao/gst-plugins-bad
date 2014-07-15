@@ -29,6 +29,7 @@ using namespace std;
 #include <gst/base/gstbasesrc.h>
 #include <gst/base/gstpushsrc.h>
 #include <gst/video/video.h>
+#include <pthread.h>
 
 G_BEGIN_DECLS
 #define GST_TYPE_DEPTHSENSE_SRC \
@@ -68,6 +69,7 @@ struct _GstDepthsenseSrc
 
   Context context_;
   DepthNode dnode_;
+  pthread_t capture_thread_;
 };
 
 struct _GstDepthsenseSrcClass
