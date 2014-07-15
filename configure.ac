@@ -51,8 +51,8 @@ dnl sets GST_LT_LDFLAGS
 AS_LIBTOOL(GST, 391, 0, 391)
 
 dnl *** required versions of GStreamer stuff ***
-GST_REQ=1.3.91
-GSTPB_REQ=1.3.91
+GST_REQ=1.1.1#1.3.91
+GSTPB_REQ=1.1.1#1.3.91
 
 dnl *** autotools stuff ****
 
@@ -1977,6 +1977,21 @@ AG_GST_CHECK_FEATURE(DECKLINK, [decklink], decklink, [
 ])
 AM_CONDITIONAL(DECKLINK_OSX, test "x$HAVE_DECKLINK_OSX" = xyes)
 
+
+dnl *** DepthSense ***
+translit(dnm, m, l) AM_CONDITIONAL(USE_DEPTHSENSE, true)
+AG_GST_CHECK_FEATURE(DEPTHSENSE, [DepthSense sdk], depthsense, [
+  AC_CHECK_LIB(dl, dlopen,
+    [
+      HAVE_DEPTHSENSE=yes
+      DEPTHSENSE_CXXFLAGS="-I /opt/softkinetic/DepthSenseSDK/include"
+      DEPTHSENSE_LIBS="-L /opt/softkinetic/DepthSenseSDK/lib/ -lDepthSense -lDepthSensePlugins -lturbojpeg"
+    ])
+
+   AC_SUBST(DEPTHSENSE_CXXFLAGS)
+   AC_SUBST(DEPTHSENSE_LIBS)
+])
+
 dnl **** DirectFB ****
 translit(dnm, m, l) AM_CONDITIONAL(USE_DIRECTFB, true)
 AG_GST_CHECK_FEATURE(DIRECTFB, [directfb], dfbvideosink , [
@@ -3000,6 +3015,7 @@ AM_CONDITIONAL(USE_DASH, false)
 AM_CONDITIONAL(USE_DC1394, false)
 AM_CONDITIONAL(USE_DECKLINK, false)
 AM_CONDITIONAL(DECKLINK_OSX, false)
+  AM_CONDITIONAL(USE_DEPTHSENSE, false)
 AM_CONDITIONAL(USE_DIRECTFB, false)
 AM_CONDITIONAL(USE_WAYLAND, false)
 AM_CONDITIONAL(USE_DAALA, false)
@@ -3302,6 +3318,7 @@ ext/chromaprint/Makefile
 ext/curl/Makefile
 ext/dash/Makefile
 ext/dc1394/Makefile
+ext/depthsense/Makefile
 ext/directfb/Makefile
 ext/wayland/Makefile
 ext/daala/Makefile
