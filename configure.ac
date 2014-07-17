@@ -1981,15 +1981,15 @@ AM_CONDITIONAL(DECKLINK_OSX, test "x$HAVE_DECKLINK_OSX" = xyes)
 dnl *** DepthSense ***
 translit(dnm, m, l) AM_CONDITIONAL(USE_DEPTHSENSE, true)
 AG_GST_CHECK_FEATURE(DEPTHSENSE, [DepthSense sdk], depthsense, [
-  AC_CHECK_LIB(dl, dlopen,
+  AC_CHECK_FILE([/opt/softkinetic/DepthSenseSDK/include/DepthSense.hxx],
     [
       HAVE_DEPTHSENSE=yes
       DEPTHSENSE_CXXFLAGS="-I/opt/softkinetic/DepthSenseSDK/include"
       DEPTHSENSE_LIBS="-L/opt/softkinetic/DepthSenseSDK/lib/ -lDepthSense -lDepthSensePlugins -lturbojpeg"
-    ])
-
-   AC_SUBST(DEPTHSENSE_CXXFLAGS)
-   AC_SUBST(DEPTHSENSE_LIBS)
+    ],
+    AC_MSG_WARN([DepthSense SDK not found.])),
+  AC_SUBST(DEPTHSENSE_CXXFLAGS)
+  AC_SUBST(DEPTHSENSE_LIBS)
 ])
 
 dnl **** DirectFB ****
@@ -3015,7 +3015,7 @@ AM_CONDITIONAL(USE_DASH, false)
 AM_CONDITIONAL(USE_DC1394, false)
 AM_CONDITIONAL(USE_DECKLINK, false)
 AM_CONDITIONAL(DECKLINK_OSX, false)
-  AM_CONDITIONAL(USE_DEPTHSENSE, false)
+AM_CONDITIONAL(USE_DEPTHSENSE, false)
 AM_CONDITIONAL(USE_DIRECTFB, false)
 AM_CONDITIONAL(USE_WAYLAND, false)
 AM_CONDITIONAL(USE_DAALA, false)
@@ -3442,4 +3442,3 @@ AC_OUTPUT
 
 AG_GST_OUTPUT_PLUGINS
 ORC_OUTPUT
-

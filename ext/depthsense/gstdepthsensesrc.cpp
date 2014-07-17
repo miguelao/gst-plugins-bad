@@ -544,7 +544,7 @@ depthsense_initialise_devices (GstDepthSenseSrc * src)
 
 
 const int kNumPixelsQVGA = 320 * 240;
-const int16_t kConfidenceThreshold = 10;
+const int16_t kConfidenceThreshold = 30;
 const uint16_t kNoDepthDefault = 65535;
 uint16_t pixelsDepthAcqQVGA[kNumPixelsQVGA];
 uint16_t* const pixelsDepthAcq = pixelsDepthAcqQVGA;
